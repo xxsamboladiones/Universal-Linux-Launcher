@@ -1,74 +1,100 @@
-<<<<<<< HEAD
-# Universal-Linux-Launcher
-Orbit is a modern Linux game and app launcher built for CachyOS and Arch. Unify Steam, Epic, Battle.net, Flatpak, AppImage and local apps in one fast, customizable library with custom launch options, Proton/Wine support, performance tools and managed stores.
-=======
 # Orbit Launcher
 
-Launcher desktop local e modular para jogos e aplicativos Linux, desenvolvido para CachyOS/Arch, KDE Plasma e Wayland. O Orbit reúne descoberta local, compatibilidade Wine/Proton, lojas gerenciadas e distribuição nativa/AppImage.
+Launcher universal de jogos e aplicativos para CachyOS, Arch Linux, KDE Plasma e Wayland. O Orbit reúne biblioteca local, compatibilidade Wine/Proton, ferramentas de desempenho e provedores de lojas em uma interface única.
+
+Versão atual: **0.1.1**
+
+## Novidades da 0.1.1
+
+- correção automática da janela branca do WebKitGTK em GPUs NVIDIA;
+- detecção de NVIDIA antes da criação da webview, com fallback seguro para o renderizador DMA-BUF;
+- instalação automática de SteamCMD, Legendary e GOGDL a partir de receitas confiáveis embutidas;
+- downloads retomáveis, checksum SHA-256, staging atômico e rollback;
+- progresso por eventos durante download, verificação e instalação;
+- preparação de provedores em segundo plano, sem bloquear a interface;
+- correção do SteamCMD que permanecia no prompt interativo durante a leitura da versão;
+- estado Steam conectado vinculado à sessão SteamCMD gerenciada pelo Orbit.
+
+## Recursos
+
+- biblioteca unificada para Steam, arquivos `.desktop`, Flatpak, AppImage e itens personalizados;
+- scan paralelo e incremental que preserva favoritos, itens ocultos e histórico;
+- edição de executável, argumentos, ambiente e diretório de trabalho;
+- seleção de Proton/Wine e prefixo por jogo;
+- GameMode, MangoHud, Gamescope, DXVK e VKD3D;
+- suporte a jogos não Steam com Steam Overlay;
+- painel para Steam, Epic Games, GOG e Battle.net;
+- fila persistente de instalações e atualizações;
+- Secret Service/KWallet para credenciais e sessões;
+- bandeja, instância única, autostart, backup e restauração;
+- pacotes AppImage, DEB e PKGBUILD para Arch/CachyOS.
+
+## NVIDIA e AppImage
+
+O Tauri usa WebKitGTK no Linux. Em algumas combinações de WebKitGTK e driver NVIDIA, a importação do framebuffer DMA-BUF falha e a janela fica branca mesmo com o frontend carregado. O Orbit detecta NVIDIA pelo driver, módulo do kernel ou identificador DRM e aplica `WEBKIT_DISABLE_DMABUF_RENDERER=1` antes de inicializar GTK/WebKit.
+
+A mitigação é seletiva e não desativa a aceleração gráfica dos jogos. Para diagnóstico:
+
+```bash
+# Reativa o caminho DMA-BUF do WebKitGTK
+ORBIT_ENABLE_DMABUF_RENDERER=1 ./orbit-launcher.AppImage
+
+# Último recurso: desativa a composição acelerada da webview
+ORBIT_WEBKIT_SOFTWARE=1 ./orbit-launcher.AppImage
+```
+
+Referências upstream: [Tauri — Linux Graphics Issues](https://v2.tauri.app/develop/debug/linux-graphics/) e [WebKitGTK bug 281279](https://bugs.webkit.org/show_bug.cgi?id=281279).
+
+## Lojas gerenciadas
+
+O botão **Preparar suporte** baixa e instala automaticamente os componentes suportados no diretório privado do Orbit:
+
+- Steam: SteamCMD, autenticação interativa e Steam Guard;
+- Epic Games: Legendary;
+- GOG: GOGDL;
+- Battle.net: cliente oficial encapsulado em Wine quando os componentes verificáveis estiverem disponíveis.
+
+O SteamCMD não substitui o Steam Desktop em todos os jogos. Steamworks, DRM e Steam Overlay ainda podem exigir o cliente oficial.
 
 ## Desenvolvimento
 
-No Arch/CachyOS, instale manualmente as dependências: `base-devel rust pnpm webkit2gtk-4.1 libappindicator-gtk3 librsvg`. O projeto nunca executa `sudo`.
+No Arch/CachyOS, instale `base-devel`, `rust`, `pnpm`, `webkit2gtk-4.1`, `libappindicator-gtk3` e `librsvg`. O projeto nunca executa `sudo`.
 
 ```bash
 pnpm install
 pnpm tauri dev
 ```
 
-Validação e build:
+Validação:
 
 ```bash
 pnpm lint
 pnpm typecheck
 pnpm test
 cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 pnpm tauri build
 ```
 
-Validação do produto:
+Validação dos artefatos:
 
 ```bash
 scripts/validate-appimage.sh src-tauri/target/release/bundle/appimage/*.AppImage
 scripts/clean-machine-smoke.sh src-tauri/target/release/orbit-launcher
 ```
 
-Os dados ficam no diretório XDG de dados da aplicação, em SQLite. Não há conta, servidor ou telemetria.
-
 ## Distribuição
 
-- PKGBUILD: `packaging/arch/PKGBUILD`
-- AppImage e `.deb`: `pnpm tauri build`
-- CI: lint, typecheck, testes, bundles e validação do AppImage
-- instância única, tray KDE, autostart XDG e backup `.orbitbackup`
-- atualizações AppImage por manifesto assinado
+- PKGBUILD: [`packaging/arch/PKGBUILD`](packaging/arch/PKGBUILD)
+- desktop entry: [`packaging/linux/io.orbit.launcher.desktop`](packaging/linux/io.orbit.launcher.desktop)
+- AppImage e DEB: `pnpm tauri build`
+- CI: lint, typecheck, testes e bundles
+- atualização AppImage por manifesto assinado
 
-Consulte [o guia do usuário](docs/USER_GUIDE.md) e [o processo de release](docs/RELEASE.md).
+## Segurança e dados
 
-## Recursos
+Componentes gerenciados possuem URL HTTPS e SHA-256 conhecidos. Manifestos externos somente podem substituir as receitas internas quando acompanhados de assinatura válida. Arquivos são preparados em staging antes da troca atômica, e a versão anterior permanece disponível para rollback.
 
-- IDs estáveis (`steam:730`, `desktop:org.kde.kate`, `custom:<uuid>`)
-- Steam Libraries adicionais por `libraryfolders.vdf`
-- parsing seguro do `Exec` de arquivos `.desktop`
-- argumentos e ambiente estruturados, sem `sh -c`
-- rescan incremental que preserva preferências
-- isolamento de falhas por provider
-- scan paralelo com progresso por provider e diff transacional
-- itens desinstalados preservados no histórico com `installed=false`
-- sessões com PID, duração, exit code e tempo total
-- execução opcional em Konsole/terminal configurado
-- resolução offline de ícones Freedesktop
-- migrations SQLite numeradas e atualização do banco legado
-- painel de Steam, Epic, GOG e Battle.net com estratégias explícitas
-- contratos de instalação, atualização, verificação e execução por provider
-- inventário de SteamCMD, Legendary, Wine-GE e clientes encapsulados
-- schema persistente para contas, componentes e fila de transferências
-- bloqueio seguro de downloads sem manifesto de origem e integridade
+Senhas não são armazenadas no SQLite. Tokens usam Secret Service/KWallet. O Orbit não possui telemetria e mantém seus dados nos diretórios XDG da aplicação.
 
-## Segurança das integrações gerenciadas
-
-Downloads de componentes ficam bloqueados enquanto não houver manifesto versionado com URL, checksum e assinatura confiáveis.
-
-Credenciais nunca são solicitadas ou armazenadas no SQLite. A autenticação será feita pelo fluxo externo de cada provider e tokens de sessão serão entregues ao Secret Service/KWallet.
-
-Consulte [ARCHITECTURE.md](ARCHITECTURE.md) e [DEVELOPMENT.md](DEVELOPMENT.md).
->>>>>>> f0a6795 (feat: initial Orbit launcher)
+Consulte o [guia do usuário](docs/USER_GUIDE.md), a [arquitetura](ARCHITECTURE.md), o [guia de desenvolvimento](DEVELOPMENT.md) e o [processo de release](docs/RELEASE.md).

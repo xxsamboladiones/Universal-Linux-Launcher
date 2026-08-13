@@ -3,6 +3,7 @@ mod commands;
 mod core;
 mod database;
 mod error;
+mod graphics;
 mod platform;
 mod process;
 mod product;
@@ -10,9 +11,20 @@ mod providers;
 use commands::AppState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Precisa ser literalmente a primeira inicialização: o processo gráfico
+    // do WebKit herda essas opções quando a primeira webview é criada.
+    let graphics = graphics::configure_before_webview();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    if graphics.nvidia_detected || graphics.software_compositing {
+        tracing::info!(
+            nvidia = graphics.nvidia_detected,
+            dmabuf_disabled = graphics.dmabuf_disabled,
+            software_compositing = graphics.software_compositing,
+            "mitigação gráfica do WebKitGTK configurada"
+        );
+    }
     // O desktop-id precisa existir antes da criação da superfície X11/Wayland;
     // criá-lo em setup() é tarde demais para o Plasma associar a primeira janela.
     if let Err(error) = product::ensure_desktop_integration() {

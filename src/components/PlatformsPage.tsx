@@ -21,15 +21,47 @@ const stateLabel: Record<StoreAccount["state"], string> = {
   connected: "Conectado",
   error: "Atenção necessária",
 };
+type DependencyProgress = {
+  provider: StoreId;
+  dependency: string;
+  stage: "resolving" | "downloading" | "verifying" | "installing" | "completed";
+  downloadedBytes: number;
+  totalBytes: number;
+};
+
+const progressLabel = (progress: DependencyProgress | null) => {
+  if (!progress) return "Preparando…";
+  if (progress.stage === "resolving") return "Preparando download…";
+  if (progress.stage === "verifying") return "Verificando segurança…";
+  if (progress.stage === "installing") return "Instalando…";
+  if (progress.stage === "completed") return "Concluindo…";
+  if (progress.totalBytes > 0) {
+    const percent = Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100));
+    return `Baixando ${percent}%`;
+  }
+  return "Baixando…";
+};
 
 export function PlatformsPage() {
   const [operationProvider,setOperationProvider]=useState<StoreId>("epic");
   const [operationItem,setOperationItem]=useState("");
-  const { overview, loading, error, load, prepare, connect, retry } = usePlatform();
+  const [dependencyProgress, setDependencyProgress] = useState<
+    Partial<Record<StoreId, DependencyProgress>>
+  >({});
+  const { overview, loading, preparing, error, load, prepare, connect, retry } = usePlatform();
   useEffect(() => {
     void load();
   }, [load]);
   useEffect(() => { const unlisten=listen("transfer-progress",()=>void load()); return ()=>{void unlisten.then(fn=>fn())}; },[load]);
+  useEffect(() => {
+    const unlisten = listen<DependencyProgress>("dependency-progress", (event) => {
+      setDependencyProgress((current) => ({
+        ...current,
+        [event.payload.provider]: event.payload,
+      }));
+    });
+    return () => { void unlisten.then((stop) => stop()); };
+  }, []);
   return (
     <div className="platform-page">
       <div className="hero compact">
@@ -63,13 +95,19 @@ export function PlatformsPage() {
               </small>
             </div>
             <button
-              disabled={loading || (account.state === "connected" && account.provider !== "epic")}
+              disabled={
+                loading ||
+                Boolean(preparing[account.provider]) ||
+                (account.state === "connected" && account.provider !== "epic")
+              }
               onClick={() => void (account.state === "component_required" ? prepare(account.provider) : account.state === "connected" && account.provider === "epic" ? backend.syncStoreLibrary("epic").then(()=>load()) : account.provider === "steam" ? backend.connectProvider("steam",window.prompt("Usuário Steam (o Steam Guard será solicitado no terminal)") || undefined) : connect(account.provider))}
             >
               {account.state === "component_required" ? (
                 <>
                   <Download size={16} />
-                  Preparar suporte
+                  {preparing[account.provider]
+                    ? progressLabel(dependencyProgress[account.provider] ?? null)
+                    : "Preparar suporte"}
                 </>
               ) : account.state === "connected" && account.provider === "epic" ? <> <RefreshCw size={16}/>Sincronizar biblioteca</> : (
                 <>
@@ -135,9 +173,9 @@ export function PlatformsPage() {
         ))}
       </section>
       <p className="security-note">
-        Downloads reais permanecem bloqueados até que a origem, o checksum e a
-        assinatura do componente sejam definidos no manifesto. Tokens de sessão
-        são armazenados via {overview?.credentialStore ?? "Secret Service/KWallet"}, nunca no SQLite.
+        O Orbit baixa componentes de receitas confiáveis, valida o SHA-256 e faz
+        a instalação de forma atômica. Tokens de sessão são armazenados via{" "}
+        {overview?.credentialStore ?? "Secret Service/KWallet"}, nunca no SQLite.
       </p>
     </div>
   );

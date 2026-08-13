@@ -44,6 +44,8 @@ Instalações por PKGBUILD devem ser atualizadas com o gerenciador de pacotes/AU
 - Ícones locais: confirme que o arquivo ainda existe e faça um novo scan.
 - Loja indisponível: confira o componente e o manifesto assinado em “Lojas e contas”.
 - Wayland/Gamescope: consulte **Configurações → Compatibilidade**.
+- Tela branca com NVIDIA: o Orbit detecta a GPU/driver antes de iniciar o WebKitGTK e desativa automaticamente o renderizador DMA-BUF incompatível. Para diagnóstico, `ORBIT_ENABLE_DMABUF_RENDERER=1 ./orbit-launcher.AppImage` reativa esse caminho.
+- Se a tela continuar branca mesmo com a mitigação NVIDIA, use o último recurso `ORBIT_WEBKIT_SOFTWARE=1 ./orbit-launcher.AppImage`, que desativa a composição acelerada do WebKitGTK.
 
 ## Dados
 

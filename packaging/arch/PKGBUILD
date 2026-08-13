@@ -1,5 +1,5 @@
 pkgname=orbit-launcher
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Launcher universal de jogos e aplicativos para CachyOS e Arch Linux'
 arch=('x86_64')

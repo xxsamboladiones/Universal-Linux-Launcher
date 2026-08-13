@@ -5,6 +5,7 @@ import type { PlatformOverview, StoreId } from "../types/platform";
 interface PlatformState {
   overview: PlatformOverview | null;
   loading: boolean;
+  preparing: Partial<Record<StoreId, boolean>>;
   error: string | null;
   load: () => Promise<void>;
   prepare: (provider: StoreId) => Promise<void>;
@@ -15,6 +16,7 @@ interface PlatformState {
 export const usePlatform = create<PlatformState>((set, get) => ({
   overview: null,
   loading: false,
+  preparing: {},
   error: null,
   load: async () => {
     set({ loading: true, error: null });
@@ -25,12 +27,25 @@ export const usePlatform = create<PlatformState>((set, get) => ({
     }
   },
   prepare: async (provider) => {
-    set({ loading: true, error: null });
+    if (get().preparing[provider]) return;
+    set((state) => ({
+      preparing: { ...state.preparing, [provider]: true },
+      error: null,
+    }));
     try {
       await backend.prepareProvider(provider);
       await get().load();
+      set((state) => {
+        const preparing = { ...state.preparing };
+        delete preparing[provider];
+        return { preparing };
+      });
     } catch (error) {
-      set({ error: String(error), loading: false });
+      set((state) => {
+        const preparing = { ...state.preparing };
+        delete preparing[provider];
+        return { error: String(error), preparing };
+      });
     }
   },
   connect: async (provider) => {

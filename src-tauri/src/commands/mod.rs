@@ -232,7 +232,11 @@ pub fn get_platform_overview(state: State<AppState>) -> PlatformOverview {
 }
 
 #[tauri::command]
-pub fn prepare_provider(provider: String, state: State<AppState>) -> Result<()> {
+pub async fn prepare_provider(
+    provider: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<()> {
     let dependencies: &[&str] = match provider.as_str() {
         "steam" => &["steamcmd"],
         "epic" => &["legendary"],
@@ -240,11 +244,32 @@ pub fn prepare_provider(provider: String, state: State<AppState>) -> Result<()> 
         "gog" => &["gogdl"],
         _ => return Err(LauncherError::ProviderUnavailable(provider)),
     };
-    let manager = platform::DependencyManager::new(state.data_dir.clone());
-    for dependency in dependencies {
-        manager.install(dependency)?;
-    }
-    Ok(())
+    let dependencies = dependencies
+        .iter()
+        .map(|dependency| (*dependency).to_string())
+        .collect::<Vec<_>>();
+    let data_dir = state.data_dir.clone();
+    let selected_provider = provider.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = platform::DependencyManager::new(data_dir);
+        for dependency in dependencies {
+            manager.install_with_progress(&dependency, |progress| {
+                let _ = app.emit(
+                    "dependency-progress",
+                    serde_json::json!({
+                        "provider": selected_provider,
+                        "dependency": progress.dependency,
+                        "stage": progress.stage,
+                        "downloadedBytes": progress.downloaded_bytes,
+                        "totalBytes": progress.total_bytes,
+                    }),
+                );
+            })?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?
 }
 
 #[tauri::command]

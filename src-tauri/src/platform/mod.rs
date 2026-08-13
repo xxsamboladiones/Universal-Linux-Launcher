@@ -3,10 +3,7 @@ mod phase3;
 use crate::database::Database;
 pub use phase3::{CredentialVault, DependencyManager, ProviderManager};
 use serde::{Deserialize, Serialize};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,7 +103,7 @@ pub fn overview(root: &Path, db: &Database) -> PlatformOverview {
                 } else {
                     DependencyState::Missing
                 },
-                installed_version: path.as_ref().and_then(|_| detect_version(id)),
+                installed_version: path.as_ref().and_then(|_| manager.installed_version(id)),
                 required_disk_bytes: *size,
                 executable: path.map(|p| p.to_string_lossy().into_owned()),
             }
@@ -179,12 +176,9 @@ fn provider_connected(root: &Path, provider: &str) -> bool {
     };
     match provider {
         "epic" => home.join(".config/legendary/user.json").is_file(),
-        "steam" => {
-            home.join(".steam/steam/config/loginusers.vdf").is_file()
-                || home
-                    .join(".local/share/Steam/config/loginusers.vdf")
-                    .is_file()
-        }
+        "steam" => root
+            .join("providers/steamcmd/current/config/loginusers.vdf")
+            .is_file(),
         "gog" => home.join(".config/heroic/gog_store/auth.json").is_file(),
         "battlenet" => root.join("prefixes/battlenet").is_dir(),
         _ => false,
@@ -198,14 +192,6 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
         .map(|p| p.join(name))
         .find(|p| p.is_file())
 }
-fn detect_version(binary: &str) -> Option<String> {
-    let output = Command::new(binary).arg("--version").output().ok()?;
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .map(|x| x.trim().into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

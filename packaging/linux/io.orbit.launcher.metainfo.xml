@@ -5,8 +5,20 @@
   <summary>Launcher universal de jogos e aplicativos para Linux</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
+  <developer id="io.orbit">
+    <name>Orbit Contributors</name>
+  </developer>
+  <url type="homepage">https://github.com/orbit-launcher/orbit-launcher</url>
   <launchable type="desktop-id">io.orbit.launcher.desktop</launchable>
   <description>
-    <p>Gerencie jogos, aplicativos, runtimes e lojas em uma única biblioteca.</p>
+    <p>Gerencie jogos, aplicativos Linux, runtimes de compatibilidade e provedores de lojas em uma única biblioteca integrada.</p>
   </description>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.1" date="2026-08-13">
+      <description>
+        <p>Instalação automática de provedores, progresso sem bloqueio e correção de renderização para NVIDIA.</p>
+      </description>
+    </release>
+  </releases>
 </component>
