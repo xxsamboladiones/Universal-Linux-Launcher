@@ -2,7 +2,12 @@
 
 Launcher universal de jogos e aplicativos para CachyOS, Arch Linux, KDE Plasma e Wayland. O Orbit reúne biblioteca local, compatibilidade Wine/Proton, ferramentas de desempenho e provedores de lojas em uma interface única.
 
-Versão atual: **0.1.1**
+## Novidades da **v0.1.2-alpha**
+
+Grande atualização de estabilidade e infraestrutura: melhorias na integração Epic/SteamCMD, fila de downloads e instalações, progresso em tempo real, desinstalação, sincronização assíncrona, SQLite, suporte a JAR, ícones Windows/Freedesktop e diversos ajustes de concorrência, segurança e testes.
+
+
+Versão atual: **0.1.2**
 
 ## Novidades da 0.1.1
 
