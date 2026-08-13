@@ -1,6 +1,6 @@
 [package]
 name = "orbit-launcher"
-version = "0.1.1"
+version = "0.1.2"
 description = "Universal Linux game and application launcher"
 authors = ["Orbit Contributors"]
 edition = "2021"
