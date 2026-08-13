@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Orbit Launcher
+GenericName=Game Launcher
+Comment=Biblioteca universal para jogos e aplicativos no Linux
+Exec=orbit-launcher
+Icon=orbit-launcher
+Terminal=false
+Categories=Game;Utility;
+StartupNotify=true
+StartupWMClass=orbit-launcher
+Keywords=games;launcher;steam;epic;gog;wine;proton;

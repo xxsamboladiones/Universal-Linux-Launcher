@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.orbit.launcher</id>
+  <name>Orbit Launcher</name>
+  <summary>Launcher universal de jogos e aplicativos para Linux</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <launchable type="desktop-id">io.orbit.launcher.desktop</launchable>
+  <description>
+    <p>Gerencie jogos, aplicativos, runtimes e lojas em uma única biblioteca.</p>
+  </description>
+</component>

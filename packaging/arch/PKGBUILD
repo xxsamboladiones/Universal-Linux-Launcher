@@ -1,0 +1,42 @@
+pkgname=orbit-launcher
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Launcher universal de jogos e aplicativos para CachyOS e Arch Linux'
+arch=('x86_64')
+url='https://github.com/orbit-launcher/orbit-launcher'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'openssl' 'curl' 'libsecret')
+makedepends=('cargo' 'pnpm' 'nodejs' 'clang' 'lld')
+optdepends=('steam: Steam e Steam Overlay' 'gamemode: otimizações para jogos' 'mangohud: métricas em jogo' 'gamescope: compositor para jogos' 'kwallet: armazenamento de credenciais no KDE')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  pnpm install --frozen-lockfile
+  cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  pnpm build
+  cargo build --release --locked --manifest-path src-tauri/Cargo.toml
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  pnpm test
+  cargo test --locked --manifest-path src-tauri/Cargo.toml
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 src-tauri/target/release/orbit-launcher "$pkgdir/usr/bin/orbit-launcher"
+  install -Dm644 packaging/linux/io.orbit.launcher.desktop "$pkgdir/usr/share/applications/io.orbit.launcher.desktop"
+  install -Dm644 packaging/linux/io.orbit.launcher.desktop "$pkgdir/usr/share/applications/orbit-launcher.desktop"
+  install -Dm644 src-tauri/icons/icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/io.orbit.launcher.png"
+  install -Dm644 src-tauri/icons/icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/orbit-launcher.png"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  cp -r docs "$pkgdir/usr/share/doc/$pkgname/"
+}

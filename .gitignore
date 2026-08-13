@@ -1,0 +1,58 @@
+# Node / pnpm
+node_modules/
+.pnpm-store/
+
+# Frontend build
+dist/
+dist-ssr/
+
+# Rust / Tauri
+src-tauri/target/
+target/
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.directory
+.Trash-*
+Thumbs.db
+
+# Tests
+coverage/
+
+# Temporary files
+tmp/
+temp/
+.cache/
+*.tmp
+*.bak
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Generated packages
+*.AppImage
+*.deb
+*.rpm
+*.pkg.tar.zst
