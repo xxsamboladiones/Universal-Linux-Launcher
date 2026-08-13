@@ -10,7 +10,9 @@ import { useLibrary } from "./stores/library";
 import type { LibraryItem } from "./types/library";
 import type { ScanProgress } from "./types/library";
 import type { AppSettings } from "./types/library";
+import type { TransferOperation } from "./types/platform";
 import { backend } from "./services/backend";
+import { visibleInLibrary } from "./services/library-filter";
 import "./styles.css";
 import "./platform.css";
 import "./modal.css";
@@ -22,7 +24,8 @@ import "./phase2.css";
 import "./controls.css";
 export default function App() {
   const s = useLibrary();
-  const { load, scan, setFilter, refreshRunning, setProgress } = s;
+  const { load, scan, setFilter, refreshRunning, setProgress, applyTransfer } =
+    s;
   const [adding, setAdding] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [editing, setEditing] = useState<LibraryItem | null>(null);
@@ -53,13 +56,23 @@ export default function App() {
     const unlisten = listen<ScanProgress>("scan-progress", (event) =>
       setProgress(event.payload),
     );
+    const unlistenTransfer = listen<TransferOperation>(
+      "transfer-progress",
+      (event) => applyTransfer(event.payload),
+    );
+    const unlistenLibrary = listen<string>(
+      "library-changed",
+      () => void load(),
+    );
     void refreshRunning();
     const timer = setInterval(() => void refreshRunning(), 2000);
     return () => {
       clearInterval(timer);
       void unlisten.then((fn) => fn());
+      void unlistenTransfer.then((fn) => fn());
+      void unlistenLibrary.then((fn) => fn());
     };
-  }, [refreshRunning, setProgress]);
+  }, [applyTransfer, load, refreshRunning, setProgress]);
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
@@ -79,26 +92,30 @@ export default function App() {
     addEventListener("keydown", fn);
     return () => removeEventListener("keydown", fn);
   }, [scan, setFilter]);
+  const filteredItems = useMemo(
+    () => s.items.filter((item) => visibleInLibrary(item, s.filter)),
+    [s.items, s.filter],
+  );
   const items = useMemo(
     () =>
-      s.items
-        .filter(
-          (i) =>
-            !i.hidden &&
-            i.installed &&
-            (s.filter === "all" ||
-              s.filter === "home" ||
-              (s.filter === "favorites" && i.favorite) ||
-              i.kind === s.filter ||
-              i.provider === s.filter),
-        )
+      filteredItems
         .filter((i) =>
           `${i.name} ${i.provider} ${i.category ?? ""} ${i.tags.join(" ")}`
             .toLowerCase()
             .includes(s.query.toLowerCase()),
+        )
+        .sort((left, right) =>
+          s.filter === "epic"
+            ? Number(right.installed) - Number(left.installed) ||
+              left.name.localeCompare(right.name, "pt-BR")
+            : 0,
         ),
-    [s.items, s.filter, s.query],
+    [filteredItems, s.filter, s.query],
   );
+  const epicInstalled =
+    s.filter === "epic"
+      ? filteredItems.filter((item) => item.installed).length
+      : 0;
   const restore = async (item: LibraryItem) => {
     setRestoring(item.id);
     try {
@@ -149,11 +166,19 @@ export default function App() {
         ) : (
           <>
             <div className="hero">
-              <p>SUA BIBLIOTECA</p>
+              <p>{s.filter === "epic" ? "SUA CONTA EPIC" : "SUA BIBLIOTECA"}</p>
               <h1>
-                {s.filter === "home" ? "Olá, pronto para jogar?" : "Biblioteca"}
+                {s.filter === "home"
+                  ? "Olá, pronto para jogar?"
+                  : s.filter === "epic"
+                    ? "Epic Games"
+                    : "Biblioteca"}
               </h1>
-              <span>{items.length} itens disponíveis no seu universo</span>
+              <span>
+                {s.filter === "epic"
+                  ? `${filteredItems.length} jogos na conta · ${epicInstalled} instalados`
+                  : `${items.length} itens disponíveis no seu universo`}
+              </span>
             </div>
             <div className="toolbar">
               <div>
@@ -192,7 +217,19 @@ export default function App() {
                   key={i.id}
                   item={i}
                   running={i.id in s.running}
+                  installing={Boolean(s.installing[i.id])}
+                  uninstalling={Boolean(s.uninstalling[i.id])}
                   onLaunch={() => void s.launch(i)}
+                  onInstall={() => void s.install(i)}
+                  onUninstall={() => {
+                    const detail =
+                      i.provider === "appimage"
+                        ? "O arquivo AppImage será movido para a lixeira."
+                        : "Os arquivos do programa serão removidos; saves e configurações externas serão preservados quando o provider permitir.";
+                    if (confirm(`Desinstalar ${i.name}?\n\n${detail}`)) {
+                      void s.uninstall(i);
+                    }
+                  }}
                   onFavorite={() => void s.favorite(i)}
                   onHide={() => void s.hide(i)}
                   onEdit={() => setEditing(i)}
@@ -211,8 +248,9 @@ export default function App() {
                 <Gamepad2 />
                 <h2>Sua órbita está vazia</h2>
                 <p>
-                  Atualize a biblioteca para encontrar Steam e aplicativos do
-                  sistema.
+                  {s.filter === "epic"
+                    ? "Conecte sua conta e sincronize a biblioteca da Epic Games."
+                    : "Atualize a biblioteca para encontrar Steam e aplicativos do sistema."}
                 </p>
               </div>
             )}

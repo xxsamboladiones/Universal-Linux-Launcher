@@ -3,7 +3,13 @@ export type ConnectionState =
   "disconnected" | "component_required" | "connected" | "error";
 export type DependencyState = "missing" | "installed" | "update_available";
 export type OperationState =
-  "queued" | "running" | "paused" | "completed" | "failed";
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "cancelled"
+  | "paused"
+  | "completed"
+  | "failed";
 
 export interface StoreAccount {
   provider: StoreId;

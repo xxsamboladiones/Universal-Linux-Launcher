@@ -33,15 +33,34 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_library_hidden ON library_items(hidden);",
     "ALTER TABLE library_items ADD COLUMN terminal INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE library_items ADD COLUMN compatibility TEXT NOT NULL DEFAULT '{}';",
+    "ALTER TABLE library_items ADD COLUMN owned INTEGER NOT NULL DEFAULT 1;
+     CREATE INDEX idx_library_provider_owned ON library_items(provider,owned);",
+    // Builds before the Epic installed-catalog split marked every entitlement
+    // as installed and never persisted a local directory. Repair that legacy
+    // state once so the first click offers installation instead of launch.
+    "UPDATE library_items
+     SET installed=0,updated_at=CURRENT_TIMESTAMP
+     WHERE provider='epic' AND installed=1
+       AND (working_directory IS NULL OR trim(working_directory)='');",
 ];
 
 pub struct Database {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAccountRecord {
+    pub provider: String,
+    pub state: String,
+    pub display_name: Option<String>,
+    pub updated_at: String,
+}
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         let mut db = Self { conn };
         db.migrate()?;
         Ok(db)
@@ -85,6 +104,16 @@ impl Database {
             tx.execute_batch(
                 "ALTER TABLE library_items ADD COLUMN compatibility TEXT NOT NULL DEFAULT '{}';",
             )?;
+            tx.execute_batch(
+                "ALTER TABLE library_items ADD COLUMN owned INTEGER NOT NULL DEFAULT 1;
+                 CREATE INDEX IF NOT EXISTS idx_library_provider_owned ON library_items(provider,owned);",
+            )?;
+            tx.execute_batch(
+                "UPDATE library_items
+                 SET installed=0,updated_at=CURRENT_TIMESTAMP
+                 WHERE provider='epic' AND installed=1
+                   AND (working_directory IS NULL OR trim(working_directory)='');",
+            )?;
             tx.pragma_update(None, "user_version", MIGRATIONS.len())?;
             tx.commit()?;
             current = MIGRATIONS.len();
@@ -105,7 +134,7 @@ impl Database {
     ) -> Result<(usize, usize)> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "UPDATE library_items SET installed=0 WHERE provider=?1",
+            "UPDATE library_items SET owned=0,installed=0 WHERE provider=?1",
             [provider_name],
         )?;
         let mut added = 0;
@@ -146,11 +175,76 @@ impl Database {
         Ok(items)
     }
 
+    pub fn provider_item_count(&self, provider_name: &str) -> Result<u64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM library_items WHERE provider=?1 AND owned=1",
+                [provider_name],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     pub fn get(&self, id: &str) -> Result<Option<LibraryItem>> {
         Ok(self
             .conn
             .query_row(&format!("{} WHERE id=?1", SELECT_ITEM), [id], row)
             .optional()?)
+    }
+
+    pub fn set_installation(&self, id: &str, directory: &Path) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE library_items
+             SET installed=1,working_directory=?1,updated_at=?2
+             WHERE id=?3 AND owned=1",
+            params![
+                directory.to_string_lossy(),
+                chrono::Utc::now().to_rfc3339(),
+                id
+            ],
+        )? == 1)
+    }
+
+    pub fn set_uninstalled(&self, id: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE library_items
+             SET installed=0,working_directory=NULL,updated_at=?1
+             WHERE id=?2 AND installed=1",
+            params![chrono::Utc::now().to_rfc3339(), id],
+        )? == 1)
+    }
+
+    /// Preenche apenas ícones ausentes de itens adicionados pelo usuário.
+    /// A condição no próprio UPDATE evita sobrescrever uma imagem escolhida
+    /// enquanto o backfill estava extraindo o recurso do executável.
+    pub fn set_custom_icon_if_missing(&self, id: &str, icon: &Path) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE library_items SET icon=?1,updated_at=?2
+             WHERE id=?3 AND provider='custom' AND (icon IS NULL OR trim(icon)='')",
+            params![icon.to_string_lossy(), chrono::Utc::now().to_rfc3339(), id],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Repara IDs de tema persistidos por scans antigos sem sobrescrever uma
+    /// resolução mais nova que tenha vencido a corrida.
+    pub fn set_scanned_icon_if_matches(
+        &self,
+        id: &str,
+        expected: &str,
+        icon: &Path,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE library_items SET icon=?1,updated_at=?2
+             WHERE id=?3 AND provider IN ('desktop','flatpak') AND icon=?4",
+            params![
+                icon.to_string_lossy(),
+                chrono::Utc::now().to_rfc3339(),
+                id,
+                expected
+            ],
+        )?;
+        Ok(changed == 1)
     }
 
     pub fn flag(&self, id: &str, column: &str, value: bool) -> Result<()> {
@@ -189,6 +283,64 @@ impl Database {
         Ok(())
     }
 
+    pub fn provider_account(&self, provider: &str) -> Result<Option<ProviderAccountRecord>> {
+        let provider = provider.trim();
+        if provider.is_empty() {
+            return Err(crate::error::LauncherError::InvalidArguments(
+                "provider da conta não pode ser vazio".into(),
+            ));
+        }
+
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT provider,state,display_name,updated_at
+                 FROM provider_accounts WHERE provider=?1",
+                [provider],
+                |row| {
+                    Ok(ProviderAccountRecord {
+                        provider: row.get(0)?,
+                        state: row.get(1)?,
+                        display_name: row.get(2)?,
+                        updated_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn upsert_provider_account(
+        &self,
+        provider: &str,
+        state: &str,
+        display_name: Option<&str>,
+    ) -> Result<()> {
+        let provider = provider.trim();
+        let state = state.trim();
+        if provider.is_empty() || state.is_empty() {
+            return Err(crate::error::LauncherError::InvalidArguments(
+                "provider e estado da conta são obrigatórios".into(),
+            ));
+        }
+        let display_name = display_name.map(str::trim).filter(|name| !name.is_empty());
+
+        self.conn.execute(
+            "INSERT INTO provider_accounts(provider,state,display_name,updated_at)
+             VALUES(?1,?2,?3,?4)
+             ON CONFLICT(provider) DO UPDATE SET
+                state=excluded.state,
+                display_name=excluded.display_name,
+                updated_at=excluded.updated_at",
+            params![
+                provider,
+                state,
+                display_name,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn start_session(&self, id: &str, pid: u32) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -221,47 +373,193 @@ impl Database {
     }
 
     pub fn operations(&self) -> Result<Vec<Operation>> {
-        let mut query = self.conn.prepare("SELECT id,provider,COALESCE(item_id,''),action,state,downloaded_bytes,total_bytes,bytes_per_second,error,created_at,updated_at FROM transfer_operations ORDER BY created_at DESC")?;
+        let mut query = self.conn.prepare(&format!(
+            "SELECT {OPERATION_COLUMNS} FROM transfer_operations ORDER BY created_at DESC"
+        ))?;
         let operations = query
-            .query_map([], |row| {
-                Ok(Operation {
-                    id: row.get(0)?,
-                    provider: row.get(1)?,
-                    item_id: row.get(2)?,
-                    action: row.get(3)?,
-                    state: row.get(4)?,
-                    downloaded_bytes: row.get(5)?,
-                    total_bytes: row.get(6)?,
-                    bytes_per_second: row.get(7)?,
-                    error: row.get(8)?,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
-                })
-            })?
+            .query_map([], operation_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(operations)
     }
 
+    pub fn operation(&self, id: &str) -> Result<Option<Operation>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {OPERATION_COLUMNS} FROM transfer_operations WHERE id=?1"),
+                [id],
+                operation_row,
+            )
+            .optional()?)
+    }
+
     pub fn queue_operation(&self, operation: &Operation) -> Result<()> {
+        let duplicate = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM transfer_operations
+             WHERE provider=?1 AND item_id=?2 AND action=?3
+               AND state IN ('queued','running','cancelling') LIMIT 1",
+                params![operation.provider, operation.item_id, operation.action],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if duplicate {
+            return Err(crate::error::LauncherError::InvalidArguments(
+                "Já existe uma operação ativa para este item".into(),
+            ));
+        }
         self.conn.execute("INSERT INTO transfer_operations(id,provider,item_id,action,state,downloaded_bytes,total_bytes,bytes_per_second,error,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)", params![operation.id,operation.provider,operation.item_id,operation.action,operation.state,operation.downloaded_bytes,operation.total_bytes,operation.bytes_per_second,operation.error,operation.created_at,operation.updated_at])?;
         Ok(())
     }
 
-    pub fn update_operation(
+    /// Claims a queued operation for a worker. Returning `None` means another
+    /// actor removed, cancelled, or already started it before this worker.
+    pub fn start_operation(&self, id: &str) -> Result<Option<Operation>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "UPDATE transfer_operations
+                     SET state='running',bytes_per_second=0,error=NULL,updated_at=?1
+                     WHERE id=?2 AND state='queued'
+                     RETURNING {OPERATION_COLUMNS}"
+                ),
+                params![chrono::Utc::now().to_rfc3339(), id],
+                operation_row,
+            )
+            .optional()?)
+    }
+
+    /// Progress is accepted only while the worker owns a running operation.
+    /// In particular, a late progress event cannot undo `cancelling`.
+    pub fn update_running_progress(
         &self,
         id: &str,
-        state: &str,
         downloaded: u64,
         total: u64,
         speed: u64,
+    ) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE transfer_operations
+             SET downloaded_bytes=?1,total_bytes=?2,bytes_per_second=?3,
+                 error=NULL,updated_at=?4
+             WHERE id=?5 AND state='running'",
+            params![
+                downloaded,
+                total,
+                speed,
+                chrono::Utc::now().to_rfc3339(),
+                id
+            ],
+        )? > 0)
+    }
+
+    /// Atomically requests cancellation for a queued or running operation.
+    /// The current record is returned even when no transition was possible so
+    /// callers can distinguish idempotent cancellation from a terminal state.
+    pub fn request_cancel(&self, id: &str) -> Result<Option<Operation>> {
+        let cancelled = self
+            .conn
+            .query_row(
+                &format!(
+                    "UPDATE transfer_operations
+                     SET state='cancelling',bytes_per_second=0,updated_at=?1
+                     WHERE id=?2 AND state IN ('queued','running')
+                     RETURNING {OPERATION_COLUMNS}"
+                ),
+                params![chrono::Utc::now().to_rfc3339(), id],
+                operation_row,
+            )
+            .optional()?;
+        if cancelled.is_some() {
+            return Ok(cancelled);
+        }
+        self.operation(id)
+    }
+
+    /// Returns a terminal operation to the queue without racing a concurrent
+    /// retry/removal. A worker can only be spawned when this transition wins.
+    pub fn retry_operation(&self, id: &str) -> Result<Option<Operation>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "UPDATE transfer_operations
+                     SET state='queued',bytes_per_second=0,error=NULL,updated_at=?1
+                     WHERE id=?2 AND state IN ('failed','cancelled')
+                     RETURNING {OPERATION_COLUMNS}"
+                ),
+                params![chrono::Utc::now().to_rfc3339(), id],
+                operation_row,
+            )
+            .optional()?)
+    }
+
+    /// Commits a worker outcome without overwriting a concurrent cancellation.
+    /// A running operation reaches the requested terminal outcome, while an
+    /// operation in `cancelling` always reaches `cancelled`.
+    pub fn finish_operation(
+        &self,
+        id: &str,
+        outcome: &str,
+        downloaded: u64,
+        total: u64,
         error: Option<&str>,
-    ) -> Result<()> {
-        self.conn.execute("UPDATE transfer_operations SET state=?1,downloaded_bytes=?2,total_bytes=?3,bytes_per_second=?4,error=?5,updated_at=?6 WHERE id=?7", params![state,downloaded,total,speed,error,chrono::Utc::now().to_rfc3339(),id])?;
-        Ok(())
+    ) -> Result<Option<Operation>> {
+        if !matches!(outcome, "completed" | "failed") {
+            return Err(crate::error::LauncherError::InvalidArguments(
+                "resultado final da operação deve ser completed ou failed".into(),
+            ));
+        }
+
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "UPDATE transfer_operations
+                     SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE ?1 END,
+                         downloaded_bytes=?2,total_bytes=?3,bytes_per_second=0,
+                         error=CASE WHEN state='cancelling' THEN NULL ELSE ?4 END,
+                         updated_at=?5
+                     WHERE id=?6 AND state IN ('running','cancelling')
+                     RETURNING {OPERATION_COLUMNS}"
+                ),
+                params![
+                    outcome,
+                    downloaded,
+                    total,
+                    error,
+                    chrono::Utc::now().to_rfc3339(),
+                    id
+                ],
+                operation_row,
+            )
+            .optional()?)
+    }
+
+    pub fn remove_operation(&self, id: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "DELETE FROM transfer_operations
+             WHERE id=?1 AND state IN ('queued','completed','failed','cancelled')",
+            [id],
+        )? > 0)
     }
 
     pub fn recover_operations(&self) -> Result<()> {
-        self.conn.execute("UPDATE transfer_operations SET state='queued',error='Recuperada após interrupção',updated_at=?1 WHERE state IN ('running','rolling_back')", [chrono::Utc::now().to_rfc3339()])?;
+        // Nenhum processo filho sobrevive ao Orbit. Um cancelamento pendente
+        // pode ser concluído com segurança; os demais trabalhos ativos voltam
+        // como falha recuperável, sem criar uma fila fantasma sem worker.
+        self.conn.execute(
+            "UPDATE transfer_operations
+             SET state=CASE WHEN state='cancelling' THEN 'cancelled' ELSE 'failed' END,
+                 error=CASE WHEN state='cancelling' THEN NULL
+                            ELSE 'Operação interrompida; use Repetir ou Remover' END,
+                 bytes_per_second=0,updated_at=?1
+             WHERE state IN ('queued','running','cancelling','rolling_back')",
+            [chrono::Utc::now().to_rfc3339()],
+        )?;
         Ok(())
     }
 
@@ -289,8 +587,27 @@ impl Database {
 }
 
 const SELECT_ITEM: &str = "SELECT id,name,kind,provider,executable,args,working_directory,
-environment,icon,cover,background,category,tags,favorite,hidden,installed,play_count,
+environment,icon,cover,background,category,tags,favorite,hidden,owned,installed,play_count,
 total_play_time,last_played_at,created_at,updated_at,terminal,compatibility FROM library_items";
+
+const OPERATION_COLUMNS: &str = "id,provider,COALESCE(item_id,''),action,state,
+downloaded_bytes,total_bytes,bytes_per_second,error,created_at,updated_at";
+
+fn operation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
+    Ok(Operation {
+        id: row.get(0)?,
+        provider: row.get(1)?,
+        item_id: row.get(2)?,
+        action: row.get(3)?,
+        state: row.get(4)?,
+        downloaded_bytes: row.get(5)?,
+        total_bytes: row.get(6)?,
+        bytes_per_second: row.get(7)?,
+        error: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
 
 fn upsert_scanned(tx: &Transaction<'_>, item: &LibraryItem) -> Result<bool> {
     let exists = tx
@@ -303,13 +620,13 @@ fn upsert_scanned(tx: &Transaction<'_>, item: &LibraryItem) -> Result<bool> {
         .unwrap_or(false);
     tx.execute(
         "INSERT INTO library_items(id,name,kind,provider,executable,args,working_directory,
-         environment,icon,cover,background,category,tags,favorite,hidden,installed,play_count,
+         environment,icon,cover,background,category,tags,favorite,hidden,owned,installed,play_count,
          total_play_time,last_played_at,created_at,updated_at,terminal,compatibility)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17,?18,?19,?20,?21,?22)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,
          executable=excluded.executable,working_directory=excluded.working_directory,
          icon=excluded.icon,cover=excluded.cover,background=excluded.background,category=excluded.category,
-         installed=1,updated_at=excluded.updated_at",
+         owned=excluded.owned,installed=excluded.installed,updated_at=excluded.updated_at",
         params![
             item.id,
             item.name,
@@ -326,6 +643,8 @@ fn upsert_scanned(tx: &Transaction<'_>, item: &LibraryItem) -> Result<bool> {
             json(&item.tags),
             item.favorite,
             item.hidden,
+            item.owned,
+            item.installed,
             item.play_count,
             item.total_play_time_seconds,
             item.last_played_at,
@@ -362,14 +681,15 @@ fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
         tags: from_json(row.get(12)?),
         favorite: row.get(13)?,
         hidden: row.get(14)?,
-        installed: row.get(15)?,
-        play_count: row.get(16)?,
-        total_play_time_seconds: row.get(17)?,
-        last_played_at: row.get(18)?,
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
-        terminal: row.get(21)?,
-        compatibility: from_json(row.get(22)?),
+        owned: row.get(15)?,
+        installed: row.get(16)?,
+        play_count: row.get(17)?,
+        total_play_time_seconds: row.get(18)?,
+        last_played_at: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
+        terminal: row.get(22)?,
+        compatibility: from_json(row.get(23)?),
     })
 }
 
@@ -392,6 +712,51 @@ mod tests {
     use crate::core::model::*;
 
     #[test]
+    fn migration_repairs_legacy_epic_catalog_without_touching_local_entries() {
+        let conn = Connection::open_in_memory().unwrap();
+        for migration in MIGRATIONS.iter().take(5) {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        let mut db = Database { conn };
+
+        let legacy = LibraryItem::new(
+            "epic:legacy".into(),
+            "Legacy entitlement".into(),
+            ItemKind::Game,
+            ProviderKind::Epic,
+        );
+        db.save_user_item(&legacy).unwrap();
+        let mut local = LibraryItem::new(
+            "epic:local".into(),
+            "Local Epic game".into(),
+            ItemKind::Game,
+            ProviderKind::Epic,
+        );
+        local.working_directory = Some("/games/epic/local".into());
+        db.save_user_item(&local).unwrap();
+        let desktop = LibraryItem::new(
+            "desktop:app".into(),
+            "Desktop app".into(),
+            ItemKind::Application,
+            ProviderKind::Desktop,
+        );
+        db.save_user_item(&desktop).unwrap();
+
+        db.migrate().unwrap();
+
+        assert!(!db.get(&legacy.id).unwrap().unwrap().installed);
+        assert!(db.get(&local.id).unwrap().unwrap().installed);
+        assert!(db.get(&desktop.id).unwrap().unwrap().installed);
+        assert_eq!(
+            db.conn
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, usize>(0))
+                .unwrap(),
+            MIGRATIONS.len()
+        );
+    }
+
+    #[test]
     fn preserves_user_flags_on_rescan_and_marks_removed() {
         let mut db = Database::memory().unwrap();
         let item = LibraryItem::new(
@@ -410,22 +775,305 @@ mod tests {
         assert!(got.favorite);
         assert_eq!(got.name, "New");
         db.apply_provider_scan("steam", &[]).unwrap();
+        let removed = db.get(&item.id).unwrap().unwrap();
+        assert!(!removed.owned);
+        assert!(!removed.installed);
+    }
+
+    #[test]
+    fn provider_scan_persists_owned_separately_from_installed() {
+        let mut db = Database::memory().unwrap();
+        let mut owned_only = LibraryItem::new(
+            "epic:owned-only".into(),
+            "Owned only".into(),
+            ItemKind::Game,
+            ProviderKind::Epic,
+        );
+        owned_only.installed = false;
+        let installed = LibraryItem::new(
+            "epic:installed".into(),
+            "Installed".into(),
+            ItemKind::Game,
+            ProviderKind::Epic,
+        );
+
+        db.apply_provider_scan("epic", &[owned_only.clone(), installed.clone()])
+            .unwrap();
+
+        let owned_only = db.get(&owned_only.id).unwrap().unwrap();
+        assert!(owned_only.owned);
+        assert!(!owned_only.installed);
+        let installed = db.get(&installed.id).unwrap().unwrap();
+        assert!(installed.owned);
+        assert!(installed.installed);
+        assert_eq!(db.provider_item_count("epic").unwrap(), 2);
+    }
+
+    #[test]
+    fn completed_download_marks_only_an_owned_item_as_installed() {
+        let mut db = Database::memory().unwrap();
+        let mut item = LibraryItem::new(
+            "epic:downloaded".into(),
+            "Downloaded".into(),
+            ItemKind::Game,
+            ProviderKind::Epic,
+        );
+        item.installed = false;
+        db.apply_provider_scan("epic", std::slice::from_ref(&item))
+            .unwrap();
+
+        let directory = Path::new("/games/epic/downloaded");
+        assert!(db.set_installation(&item.id, directory).unwrap());
+        let installed = db.get(&item.id).unwrap().unwrap();
+        assert!(installed.installed);
+        assert_eq!(installed.working_directory.as_deref(), directory.to_str());
+
+        db.apply_provider_scan("epic", &[]).unwrap();
+        assert!(!db.set_installation(&item.id, directory).unwrap());
         assert!(!db.get(&item.id).unwrap().unwrap().installed);
     }
 
     #[test]
-    fn recovers_interrupted_operations() {
+    fn uninstall_keeps_entitlement_and_clears_the_local_directory() {
+        let mut db = Database::memory().unwrap();
+        let mut item = LibraryItem::new(
+            "epic:game".into(),
+            "Game".into(),
+            ItemKind::Game,
+            ProviderKind::Epic,
+        );
+        item.working_directory = Some("/games/epic/game".into());
+        db.apply_provider_scan("epic", std::slice::from_ref(&item))
+            .unwrap();
+
+        assert!(db.set_uninstalled(&item.id).unwrap());
+        let item = db.get(&item.id).unwrap().unwrap();
+        assert!(item.owned);
+        assert!(!item.installed);
+        assert_eq!(item.working_directory, None);
+    }
+
+    #[test]
+    fn repairs_only_the_expected_scanned_icon_name() {
+        let mut db = Database::memory().unwrap();
+        let mut item = LibraryItem::new(
+            "desktop:cachyos-hello".into(),
+            "CachyOS Hello".into(),
+            ItemKind::Application,
+            ProviderKind::Desktop,
+        );
+        item.icon = Some("org.cachyos.hello".into());
+        db.apply_provider_scan("desktop", std::slice::from_ref(&item))
+            .unwrap();
+
+        let resolved = Path::new("/usr/share/icons/org.cachyos.hello.svg");
+        assert!(db
+            .set_scanned_icon_if_matches(&item.id, "org.cachyos.hello", resolved)
+            .unwrap());
+        assert!(!db
+            .set_scanned_icon_if_matches(&item.id, "org.cachyos.hello", Path::new("stale.svg"))
+            .unwrap());
+        assert_eq!(
+            db.get(&item.id).unwrap().unwrap().icon.as_deref(),
+            resolved.to_str()
+        );
+    }
+
+    #[test]
+    fn recovers_interrupted_and_cancelling_operations() {
         let db = Database::memory().unwrap();
-        let mut operation = crate::platform::ProviderManager::operation("epic", "game", "install");
-        operation.state = "running".into();
-        db.queue_operation(&operation).unwrap();
+        let mut running = crate::platform::ProviderManager::operation("epic", "game", "install");
+        running.state = "running".into();
+        db.queue_operation(&running).unwrap();
+        let mut cancelling =
+            crate::platform::ProviderManager::operation("steam", "other", "install");
+        cancelling.state = "cancelling".into();
+        db.queue_operation(&cancelling).unwrap();
+
         db.recover_operations().unwrap();
-        let recovered = db.operations().unwrap();
-        assert_eq!(recovered[0].state, "queued");
-        assert!(recovered[0]
+        let recovered_running = db.operation(&running.id).unwrap().unwrap();
+        assert_eq!(recovered_running.state, "failed");
+        assert!(recovered_running
             .error
             .as_deref()
             .unwrap()
-            .contains("interrupção"));
+            .contains("interrompida"));
+        let recovered_cancelling = db.operation(&cancelling.id).unwrap().unwrap();
+        assert_eq!(recovered_cancelling.state, "cancelled");
+        assert_eq!(recovered_cancelling.error, None);
+    }
+
+    #[test]
+    fn removes_terminal_or_queued_operations_but_not_running() {
+        let db = Database::memory().unwrap();
+        let queued = crate::platform::ProviderManager::operation("steam", "1", "install");
+        db.queue_operation(&queued).unwrap();
+        assert!(db.remove_operation(&queued.id).unwrap());
+        assert!(db.operations().unwrap().is_empty());
+
+        let mut running = crate::platform::ProviderManager::operation("steam", "2", "install");
+        running.state = "running".into();
+        db.queue_operation(&running).unwrap();
+        assert!(!db.remove_operation(&running.id).unwrap());
+        assert_eq!(db.operations().unwrap().len(), 1);
+
+        let cancelling = db.request_cancel(&running.id).unwrap().unwrap();
+        assert_eq!(cancelling.state, "cancelling");
+        assert!(!db.remove_operation(&running.id).unwrap());
+        db.finish_operation(&running.id, "failed", 0, 0, Some("cancelada"))
+            .unwrap();
+        assert!(db.remove_operation(&running.id).unwrap());
+        assert!(db.operations().unwrap().is_empty());
+    }
+
+    #[test]
+    fn operation_lifecycle_uses_compare_and_swap_transitions() {
+        let db = Database::memory().unwrap();
+        let queued = crate::platform::ProviderManager::operation("steam", "42", "install");
+        db.queue_operation(&queued).unwrap();
+        assert_eq!(db.operation(&queued.id).unwrap().unwrap().state, "queued");
+
+        let running = db.start_operation(&queued.id).unwrap().unwrap();
+        assert_eq!(running.state, "running");
+        assert!(db.start_operation(&queued.id).unwrap().is_none());
+        assert!(db.update_running_progress(&queued.id, 25, 100, 10).unwrap());
+
+        let cancelling = db.request_cancel(&queued.id).unwrap().unwrap();
+        assert_eq!(cancelling.state, "cancelling");
+        assert!(!db.update_running_progress(&queued.id, 50, 100, 10).unwrap());
+
+        // A conclusão tardia do worker não pode vencer o cancelamento.
+        let cancelled = db
+            .finish_operation(&queued.id, "completed", 25, 100, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancelled.state, "cancelled");
+        assert_eq!(cancelled.downloaded_bytes, 25);
+        assert_eq!(cancelled.bytes_per_second, 0);
+        assert_eq!(cancelled.error, None);
+        assert!(db
+            .finish_operation(&queued.id, "failed", 25, 100, Some("late"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn finish_operation_accepts_only_terminal_worker_outcomes() {
+        let db = Database::memory().unwrap();
+        let completed = crate::platform::ProviderManager::operation("steam", "1", "install");
+        db.queue_operation(&completed).unwrap();
+        db.start_operation(&completed.id).unwrap();
+        let completed = db
+            .finish_operation(&completed.id, "completed", 100, 100, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.state, "completed");
+
+        let failed = crate::platform::ProviderManager::operation("steam", "2", "install");
+        db.queue_operation(&failed).unwrap();
+        db.start_operation(&failed.id).unwrap();
+        let failed = db
+            .finish_operation(&failed.id, "failed", 10, 100, Some("erro"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.state, "failed");
+        assert_eq!(failed.error.as_deref(), Some("erro"));
+
+        assert!(db
+            .finish_operation(&failed.id, "cancelled", 10, 100, None)
+            .is_err());
+    }
+
+    #[test]
+    fn queued_cancellation_is_idempotent_and_blocks_duplicate_work() {
+        let db = Database::memory().unwrap();
+        let queued = crate::platform::ProviderManager::operation("steam", "99", "install");
+        db.queue_operation(&queued).unwrap();
+        assert_eq!(
+            db.request_cancel(&queued.id).unwrap().unwrap().state,
+            "cancelling"
+        );
+        assert_eq!(
+            db.request_cancel(&queued.id).unwrap().unwrap().state,
+            "cancelling"
+        );
+        assert!(db.start_operation(&queued.id).unwrap().is_none());
+
+        let duplicate = crate::platform::ProviderManager::operation("steam", "99", "install");
+        assert!(db.queue_operation(&duplicate).is_err());
+    }
+
+    #[test]
+    fn retry_is_an_atomic_single_winner_transition() {
+        let db = Database::memory().unwrap();
+        let operation = crate::platform::ProviderManager::operation("steam", "7", "install");
+        db.queue_operation(&operation).unwrap();
+        db.start_operation(&operation.id).unwrap();
+        db.finish_operation(&operation.id, "failed", 12, 100, Some("test"))
+            .unwrap();
+
+        let retried = db.retry_operation(&operation.id).unwrap().unwrap();
+        assert_eq!(retried.state, "queued");
+        assert_eq!(retried.downloaded_bytes, 12);
+        assert_eq!(retried.error, None);
+        assert!(db.retry_operation(&operation.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_duplicate_active_operation_for_the_same_item() {
+        let db = Database::memory().unwrap();
+        let first = crate::platform::ProviderManager::operation("steam", "1050280", "install");
+        db.queue_operation(&first).unwrap();
+        let duplicate = crate::platform::ProviderManager::operation("steam", "1050280", "install");
+        assert!(db.queue_operation(&duplicate).is_err());
+
+        db.start_operation(&first.id).unwrap();
+        db.finish_operation(&first.id, "failed", 0, 0, Some("test"))
+            .unwrap();
+        let replacement =
+            crate::platform::ProviderManager::operation("steam", "1050280", "install");
+        db.queue_operation(&replacement).unwrap();
+    }
+
+    #[test]
+    fn provider_account_round_trip_only_exposes_non_secret_state() {
+        let db = Database::memory().unwrap();
+        assert!(db.provider_account("steam").unwrap().is_none());
+
+        db.upsert_provider_account(" steam ", " connected ", Some(" Player One "))
+            .unwrap();
+        let connected = db.provider_account("steam").unwrap().unwrap();
+        assert_eq!(connected.provider, "steam");
+        assert_eq!(connected.state, "connected");
+        assert_eq!(connected.display_name.as_deref(), Some("Player One"));
+        assert!(!connected.updated_at.is_empty());
+
+        let metadata: String = db
+            .conn
+            .query_row(
+                "SELECT metadata FROM provider_accounts WHERE provider='steam'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(metadata, "{}");
+
+        db.upsert_provider_account("steam", "disconnected", Some("   "))
+            .unwrap();
+        let disconnected = db.provider_account("steam").unwrap().unwrap();
+        assert_eq!(disconnected.state, "disconnected");
+        assert_eq!(disconnected.display_name, None);
+    }
+
+    #[test]
+    fn provider_account_rejects_empty_identity_fields() {
+        let db = Database::memory().unwrap();
+        assert!(db
+            .upsert_provider_account("", "connected", Some("Player"))
+            .is_err());
+        assert!(db
+            .upsert_provider_account("steam", "   ", Some("Player"))
+            .is_err());
+        assert!(db.provider_account("  ").is_err());
     }
 }

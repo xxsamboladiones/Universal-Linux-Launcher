@@ -32,6 +32,56 @@ pub struct DependencyProgress {
     pub total_bytes: u64,
 }
 
+/// Byte-level progress reported by a store client while it transfers a game.
+///
+/// Keeping this separate from [`DependencyProgress`] lets the operation queue
+/// consume provider output without coupling the parser to Tauri events or the
+/// database. The UI derives the percentage from these two integer values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TransferProgress {
+    pub(crate) downloaded_bytes: u64,
+    pub(crate) total_bytes: u64,
+}
+
+/// Parses one output line emitted by a managed provider.
+///
+/// SteamCMD reports authoritative byte counts alongside its display
+/// percentage, for example:
+/// `Update state (...) downloading, progress: 29.07 (3299539690 / 11348895985)`.
+/// We intentionally parse the byte pair instead of the decimal percentage so
+/// progress remains precise and locale-independent. Providers without a
+/// stable byte-level format return `None` until a dedicated parser is added.
+pub(crate) fn parse_transfer_progress(provider: &str, line: &str) -> Option<TransferProgress> {
+    if !provider.eq_ignore_ascii_case("steam") && !provider.eq_ignore_ascii_case("steamcmd") {
+        return None;
+    }
+
+    parse_steamcmd_transfer_progress(line)
+}
+
+fn parse_steamcmd_transfer_progress(line: &str) -> Option<TransferProgress> {
+    let line = strip_ansi_sequences(line);
+    let normalized = line.to_ascii_lowercase();
+    if !normalized.contains("update state") || !normalized.contains("downloading") {
+        return None;
+    }
+
+    // Starting after `progress:` prevents the state code's `(0x61)` from
+    // being mistaken for the byte pair.
+    let progress_marker = normalized.find("progress:")? + "progress:".len();
+    let remainder = &line[progress_marker..];
+    let pair_start = remainder.find('(')? + 1;
+    let pair_end = remainder[pair_start..].find(')')? + pair_start;
+    let (downloaded, total) = remainder[pair_start..pair_end].split_once('/')?;
+    let downloaded_bytes = downloaded.trim().parse::<u64>().ok()?;
+    let total_bytes = total.trim().parse::<u64>().ok()?;
+
+    (total_bytes > 0 && downloaded_bytes <= total_bytes).then_some(TransferProgress {
+        downloaded_bytes,
+        total_bytes,
+    })
+}
+
 pub struct DependencyManager {
     root: PathBuf,
 }
@@ -524,13 +574,20 @@ impl ProviderManager {
                     .into_owned(),
                 vec!["auth".into()],
             )),
-            "steam" => Ok((
-                deps.executable("steamcmd")
-                    .ok_or_else(|| LauncherError::ExecutableNotFound("steamcmd".into()))?
-                    .to_string_lossy()
-                    .into_owned(),
-                vec!["+login".into(), user.unwrap_or("anonymous").into()],
-            )),
+            "steam" => {
+                let user = valid_named_steam_account(user.ok_or_else(|| {
+                    LauncherError::InvalidArguments(
+                        "Informe o nome de usuário da Steam para conectar a conta".into(),
+                    )
+                })?)?;
+                Ok((
+                    deps.executable("steamcmd")
+                        .ok_or_else(|| LauncherError::ExecutableNotFound("steamcmd".into()))?
+                        .to_string_lossy()
+                        .into_owned(),
+                    vec!["+login".into(), user, "+info".into(), "+quit".into()],
+                ))
+            }
             "gog" => Ok((
                 deps.executable("gogdl")
                     .ok_or_else(|| LauncherError::ExecutableNotFound("gogdl".into()))?
@@ -548,6 +605,74 @@ impl ProviderManager {
             )),
             _ => Err(LauncherError::ProviderUnavailable(provider.into())),
         }
+    }
+
+    /// Console transcript maintained by the managed SteamCMD runtime.
+    /// Passwords are read by SteamCMD from the terminal and Orbit must never
+    /// copy this file into errors or application logs.
+    pub fn steam_log_path(&self) -> PathBuf {
+        self.root
+            .join("providers/steamcmd/current/linux32/logs/console_log.txt")
+    }
+
+    pub fn steam_log_len(&self) -> u64 {
+        fs::metadata(self.steam_log_path()).map_or(0, |metadata| metadata.len())
+    }
+
+    /// Reads only the portion appended by the authentication attempt. This
+    /// prevents an old successful attempt from masking a new failed attempt.
+    pub fn steam_account_from_log_since(&self, offset: u64) -> Option<String> {
+        let contents = fs::read(self.steam_log_path()).ok()?;
+        let start = usize::try_from(offset)
+            .ok()
+            .filter(|offset| *offset <= contents.len())
+            .unwrap_or(0);
+        steam_account_from_output(&String::from_utf8_lossy(&contents[start..]))
+    }
+
+    /// Reads the current Orbit transcript and legacy transcript locations.
+    /// The fallbacks allow accounts authenticated by development builds to be
+    /// migrated without inspecting or copying Steam's persisted auth token.
+    pub fn steam_account_from_log(&self) -> Option<String> {
+        let current = self.steam_log_path();
+        let provider_root = self.root.join("providers/steamcmd");
+        let legacy_root = provider_root.join("current");
+        [
+            current,
+            provider_root.join("authentication.log"),
+            legacy_root.join("authentication.log"),
+            legacy_root.join("logs/authentication.log"),
+        ]
+        .into_iter()
+        .find_map(|path| {
+            fs::read(path)
+                .ok()
+                .and_then(|bytes| steam_account_from_output(&String::from_utf8_lossy(&bytes)))
+        })
+    }
+
+    /// Checks whether Steam still has a persisted named-login cache without
+    /// returning, logging or copying any cache key or token value.
+    pub fn steam_login_cache_exists(&self) -> bool {
+        let Some(home) = dirs::home_dir() else {
+            return false;
+        };
+        [
+            home.join(".local/share/Steam/config/config.vdf"),
+            home.join(".steam/root/config/config.vdf"),
+            home.join(".steam/steam/config/config.vdf"),
+            home.join(".steam/steamcmd/config/config.vdf"),
+            home.join("Steam/config/config.vdf"),
+            home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam/config/config.vdf"),
+            self.root
+                .join("providers/steamcmd/current/config/config.vdf"),
+        ]
+        .into_iter()
+        .any(|path| {
+            fs::read(path)
+                .ok()
+                .is_some_and(|contents| vdf_section_has_entry(&contents, "ConnectCache"))
+        })
     }
     pub fn operation(provider: &str, item_id: &str, action: &str) -> Operation {
         let now = chrono::Utc::now().to_rfc3339();
@@ -567,9 +692,234 @@ impl ProviderManager {
     }
 }
 
+fn valid_named_steam_account(user: &str) -> Result<String> {
+    let user = user.trim();
+    if user.is_empty()
+        || user.eq_ignore_ascii_case("anonymous")
+        || user.len() > 64
+        || user.starts_with('+')
+        || user.chars().any(char::is_whitespace)
+        || user.chars().any(char::is_control)
+    {
+        return Err(LauncherError::InvalidArguments(
+            "Informe um nome de usuário válido da Steam; login anônimo não conecta uma conta"
+                .into(),
+        ));
+    }
+    Ok(user.to_string())
+}
+
+/// Extracts the last named Steam account whose login was positively confirmed.
+///
+/// New transcripts are confirmed by the `info` pair documented by Valve:
+/// `Account: <name>` and `Logon state: Logged On`. The older
+/// `Logging in user ... / OK / Waiting for user info... / OK` sequence
+/// is accepted only to migrate authentication performed by earlier Orbit
+/// builds. Anonymous sessions are intentionally ignored in both formats.
+fn steam_account_from_output(output: &str) -> Option<String> {
+    let output = strip_ansi_sequences(output);
+    let mut info_account = None;
+    let mut legacy_account = None;
+    let mut legacy_logged_in = false;
+    let mut waiting_for_user_info = false;
+    let mut last_confirmation: Option<(usize, String)> = None;
+
+    for (line_number, raw_line) in output.lines().enumerate() {
+        let line = raw_line.trim();
+
+        if let Some(account) = value_after_label(line, "Account:") {
+            info_account = valid_named_steam_account(account).ok();
+            last_confirmation = None;
+        }
+
+        if let Some(state) = value_after_label(line, "Logon state:") {
+            if state.eq_ignore_ascii_case("Logged On") {
+                if let Some(account) = info_account.take() {
+                    last_confirmation = Some((line_number, account));
+                }
+            } else {
+                info_account = None;
+                last_confirmation = None;
+            }
+        }
+
+        if let Some(account) = legacy_login_account(line) {
+            legacy_account = valid_named_steam_account(account).ok();
+            last_confirmation = None;
+            // The real SteamCMD transcript reports login success as a plain
+            // timestamped `OK` line, not as `Logged in OK`. Confirmation is
+            // completed only after the later `Waiting for user info... / OK`.
+            legacy_logged_in = legacy_account.is_some();
+            waiting_for_user_info = false;
+        }
+        if legacy_logged_in && line.contains("Waiting for user info...") {
+            waiting_for_user_info = true;
+        }
+        if legacy_logged_in
+            && waiting_for_user_info
+            && (line.ends_with("...OK") || line_ends_with_ok(line))
+        {
+            if let Some(account) = legacy_account.take() {
+                last_confirmation = Some((line_number, account));
+            }
+            legacy_logged_in = false;
+            waiting_for_user_info = false;
+        }
+        if line.contains("FAILED") || line.contains("Login Failure") {
+            legacy_account = None;
+            legacy_logged_in = false;
+            waiting_for_user_info = false;
+            last_confirmation = None;
+        }
+    }
+
+    last_confirmation.map(|(_, account)| account)
+}
+
+fn value_after_label<'a>(line: &'a str, label: &str) -> Option<&'a str> {
+    let value = line.split_once(label)?.1.trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn legacy_login_account(line: &str) -> Option<&str> {
+    let value = line.split_once("Logging in user '")?.1;
+    value
+        .split_once('\'')
+        .map(|(account, _)| account)
+        .filter(|account| !account.is_empty())
+}
+
+fn line_ends_with_ok(line: &str) -> bool {
+    line.rsplit_once(']')
+        .map_or_else(|| line.trim() == "OK", |(_, suffix)| suffix.trim() == "OK")
+}
+
+fn strip_ansi_sequences(value: &str) -> String {
+    let mut clean = String::with_capacity(value.len());
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\u{1b}' {
+            clean.push(character);
+            continue;
+        }
+        if characters.next_if_eq(&'[').is_some() {
+            for next in characters.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+        }
+    }
+    clean
+}
+
+#[derive(Debug, PartialEq)]
+enum VdfToken {
+    Text(Vec<u8>),
+    Open,
+    Close,
+}
+
+/// Checks for at least one key/value entry inside a VDF section. Token bytes
+/// remain local to this function and are never converted to displayable text,
+/// which keeps Steam's cached authentication material out of logs and errors.
+fn vdf_section_has_entry(contents: &[u8], section: &str) -> bool {
+    let tokens = vdf_tokens(contents);
+    let section = section.as_bytes();
+    let mut index = 0;
+    while index + 1 < tokens.len() {
+        if matches!(&tokens[index], VdfToken::Text(value) if value.eq_ignore_ascii_case(section))
+            && tokens[index + 1] == VdfToken::Open
+        {
+            let mut depth = 1;
+            let mut direct_text_tokens = 0;
+            for token in &tokens[index + 2..] {
+                match token {
+                    VdfToken::Open => depth += 1,
+                    VdfToken::Close => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return direct_text_tokens >= 2;
+                        }
+                    }
+                    VdfToken::Text(_) if depth == 1 => direct_text_tokens += 1,
+                    VdfToken::Text(_) => {}
+                }
+            }
+            return false;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn vdf_tokens(contents: &[u8]) -> Vec<VdfToken> {
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < contents.len() {
+        match contents[index] {
+            b'{' => {
+                tokens.push(VdfToken::Open);
+                index += 1;
+            }
+            b'}' => {
+                tokens.push(VdfToken::Close);
+                index += 1;
+            }
+            b'"' => {
+                index += 1;
+                let mut value = Vec::new();
+                while index < contents.len() {
+                    match contents[index] {
+                        b'\\' if index + 1 < contents.len() => {
+                            value.push(contents[index + 1]);
+                            index += 2;
+                        }
+                        b'"' => {
+                            index += 1;
+                            break;
+                        }
+                        character => {
+                            value.push(character);
+                            index += 1;
+                        }
+                    }
+                }
+                tokens.push(VdfToken::Text(value));
+            }
+            b'/' if contents.get(index + 1) == Some(&b'/') => {
+                index += 2;
+                while index < contents.len() && contents[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            character if character.is_ascii_whitespace() => index += 1,
+            _ => {
+                let start = index;
+                while index < contents.len()
+                    && !contents[index].is_ascii_whitespace()
+                    && !matches!(contents[index], b'{' | b'}')
+                {
+                    index += 1;
+                }
+                tokens.push(VdfToken::Text(contents[start..index].to_vec()));
+            }
+        }
+    }
+    tokens
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn provider_with_steamcmd(root: &Path) -> ProviderManager {
+        let executable = root.join("providers/steamcmd/current/bin/steamcmd");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"#!/bin/sh\n").unwrap();
+        ProviderManager::new(root.to_path_buf())
+    }
+
     #[test]
     fn refuses_unsigned_external_override() {
         let root = tempfile::tempdir().unwrap();
@@ -635,6 +985,55 @@ mod tests {
     }
 
     #[test]
+    fn parses_real_steamcmd_download_progress_in_bytes() {
+        assert_eq!(
+            parse_transfer_progress(
+                "steam",
+                "Update state (0x61) downloading, progress: 29.07 (3299539690 / 11348895985)",
+            ),
+            Some(TransferProgress {
+                downloaded_bytes: 3_299_539_690,
+                total_bytes: 11_348_895_985,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_timestamped_and_colored_steamcmd_progress() {
+        assert_eq!(
+            parse_transfer_progress(
+                "STEAMCMD",
+                "\x1b[32m[2026-08-13 15:16:00] Update state (0x61) DOWNLOADING, PROGRESS: 4.04 (458412985 / 11348895985)\x1b[0m\r",
+            ),
+            Some(TransferProgress {
+                downloaded_bytes: 458_412_985,
+                total_bytes: 11_348_895_985,
+            })
+        );
+    }
+
+    #[test]
+    fn ignores_non_download_and_malformed_provider_progress() {
+        for line in [
+            "Update state (0x81) verifying update, progress: 29.07 (3299539690 / 11348895985)",
+            "Update state (0x61) downloading, progress: 29.07 (3299539690 / 0)",
+            "Update state (0x61) downloading, progress: 29.07 (11348895986 / 11348895985)",
+            "Update state (0x61) downloading, progress: 29.07 (not-a-number / 11348895985)",
+            "Update state (0x61) downloading, progress: 29.07",
+        ] {
+            assert_eq!(parse_transfer_progress("steam", line), None);
+        }
+
+        assert_eq!(
+            parse_transfer_progress(
+                "epic",
+                "Update state (0x61) downloading, progress: 29.07 (3299539690 / 11348895985)",
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn reads_installed_version_without_starting_provider() {
         let root = tempfile::tempdir().unwrap();
         let current = root.path().join("providers/steamcmd/current/bin");
@@ -656,5 +1055,134 @@ mod tests {
             Some("test-version")
         );
         assert!(!root.path().join("should-not-run").exists());
+    }
+
+    #[test]
+    fn steam_authentication_requires_a_named_account_and_exits_after_info() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = provider_with_steamcmd(root.path());
+
+        for invalid in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("anonymous"),
+            Some("+quit"),
+        ] {
+            assert!(provider.authenticate_command("steam", invalid).is_err());
+        }
+
+        let (_, arguments) = provider
+            .authenticate_command("steam", Some("orbit_user"))
+            .unwrap();
+        assert_eq!(arguments, ["+login", "orbit_user", "+info", "+quit"]);
+    }
+
+    #[test]
+    fn parses_named_logged_on_account_from_info_output() {
+        let output = "\
+Steam>info\n\
+Account: orbit_user\n\
+SteamID: [U:1:123]\n\
+Logon state: Logged On\n\
+Language: brazilian\n";
+        assert_eq!(
+            steam_account_from_output(output).as_deref(),
+            Some("orbit_user")
+        );
+    }
+
+    #[test]
+    fn rejects_anonymous_incomplete_and_logged_off_sessions() {
+        assert_eq!(
+            steam_account_from_output("Account: anonymous\nLogon state: Logged On\n"),
+            None
+        );
+        assert_eq!(
+            steam_account_from_output("Account: orbit_user\nLogon state: Logged Off\n"),
+            None
+        );
+        assert_eq!(
+            steam_account_from_output(
+                "Account: old_user\nLogon state: Logged On\n\
+                 Account: new_user\nLogon state: Logged Off\n",
+            ),
+            None
+        );
+        assert_eq!(steam_account_from_output("Logged in OK\n"), None);
+    }
+
+    #[test]
+    fn parses_legacy_success_for_existing_login_migration() {
+        let output = "\
+Logging in user 'legacy_user' [U:1:329000000] to Steam Public...\n\
+[2026-08-13 14:51:15] OK\n\
+[2026-08-13 14:51:15] Waiting for user info...\n\
+[2026-08-13 14:51:16] OK\n";
+        assert_eq!(
+            steam_account_from_output(output).as_deref(),
+            Some("legacy_user")
+        );
+    }
+
+    #[test]
+    fn reads_only_new_authentication_log_segment() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = ProviderManager::new(root.path().to_path_buf());
+        let log = provider.steam_log_path();
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let old = "Account: old_user\nLogon state: Logged On\n";
+        fs::write(&log, old).unwrap();
+        let offset = provider.steam_log_len();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap()
+            .write_all(b"Account: new_user\nLogon state: Logged Off\n")
+            .unwrap();
+
+        assert_eq!(provider.steam_account_from_log_since(offset), None);
+        assert_eq!(provider.steam_account_from_log(), None);
+    }
+
+    #[test]
+    fn reads_legacy_authentication_log_location() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = ProviderManager::new(root.path().to_path_buf());
+        let legacy = root
+            .path()
+            .join("providers/steamcmd/current/authentication.log");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(
+            legacy,
+            b"Logging in user 'migrated_user' to Steam Public...\nOK\nWaiting for user info...OK\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            provider.steam_account_from_log().as_deref(),
+            Some("migrated_user")
+        );
+    }
+
+    #[test]
+    fn detects_only_nonempty_connect_cache_sections() {
+        assert!(vdf_section_has_entry(
+            br#""InstallConfigStore"
+            {
+                "Software" { "Valve" { "Steam" {
+                    "ConnectCache" { "fixture_user" "fake-token-for-test" }
+                } } }
+            }"#,
+            "ConnectCache"
+        ));
+        assert!(!vdf_section_has_entry(
+            br#""InstallConfigStore" { "ConnectCache" { } }"#,
+            "ConnectCache"
+        ));
+        assert!(!vdf_section_has_entry(
+            br#""Unrelated" { "fixture_user" "fake-token-for-test" }"#,
+            "ConnectCache"
+        ));
     }
 }

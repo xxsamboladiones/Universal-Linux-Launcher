@@ -17,6 +17,7 @@ const item = {
   background: null,
   favorite: false,
   hidden: false,
+  owned: true,
   installed: true,
   playCount: 0,
   totalPlayTimeSeconds: 0,
@@ -24,7 +25,25 @@ const item = {
   createdAt: "",
   updatedAt: "",
   terminal: false,
-  compatibility: { runtimeId: null, prefixPath: null, steamOverlay: false, gamemode: false, mangohud: false, gamescope: { enabled: false, width: null, height: null, outputWidth: null, outputHeight: null, fps: null, fullscreen: false, upscaler: null }, dxvk: false, vkd3d: false },
+  compatibility: {
+    runtimeId: null,
+    prefixPath: null,
+    steamOverlay: false,
+    gamemode: false,
+    mangohud: false,
+    gamescope: {
+      enabled: false,
+      width: null,
+      height: null,
+      outputWidth: null,
+      outputHeight: null,
+      fps: null,
+      fullscreen: false,
+      upscaler: null,
+    },
+    dxvk: false,
+    vkd3d: false,
+  },
 } satisfies LibraryItem;
 describe("library search", () => {
   it("matches name, provider, category and tags", () => {

@@ -1,6 +1,7 @@
 mod phase3;
 
 use crate::database::Database;
+pub(crate) use phase3::parse_transfer_progress;
 pub use phase3::{CredentialVault, DependencyManager, ProviderManager};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -146,7 +147,7 @@ pub fn overview(root: &Path, db: &Database) -> PlatformOverview {
             provider: id.into(),
             display_name: name.into(),
             description: description.into(),
-            state: connection_state(ready, provider_connected(root, id)),
+            state: connection_state(ready, provider_connected(root, db, id)),
             library_size: 0,
             dependency_ids: deps.into_iter().map(str::to_string).collect(),
             strategy: strategy.into(),
@@ -170,19 +171,61 @@ fn connection_state(component_ready: bool, authenticated: bool) -> ConnectionSta
         ConnectionState::Disconnected
     }
 }
-fn provider_connected(root: &Path, provider: &str) -> bool {
+fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
     };
+    if provider == "steam" {
+        return connected_provider_user(root, db, provider).is_some();
+    }
+    if db
+        .provider_account(provider)
+        .ok()
+        .flatten()
+        .is_some_and(|account| account.state == "connected")
+    {
+        return true;
+    }
     match provider {
         "epic" => home.join(".config/legendary/user.json").is_file(),
-        "steam" => root
-            .join("providers/steamcmd/current/config/loginusers.vdf")
-            .is_file(),
         "gog" => home.join(".config/heroic/gog_store/auth.json").is_file(),
         "battlenet" => root.join("prefixes/battlenet").is_dir(),
         _ => false,
     }
+}
+
+/// Returns only the public account name saved by Orbit. Steam's refresh token
+/// remains exclusively in Steam's own `config.vdf` and is never copied into
+/// Orbit's database.
+pub(crate) fn connected_provider_user(
+    root: &Path,
+    db: &Database,
+    provider: &str,
+) -> Option<String> {
+    let manager = ProviderManager::new(root.to_path_buf());
+    if provider == "steam" && !manager.steam_login_cache_exists() {
+        return None;
+    }
+    if let Some(account) = db.provider_account(provider).ok().flatten() {
+        if account.state != "connected" {
+            return None;
+        }
+        if account.display_name.is_some() || provider != "steam" {
+            return account.display_name;
+        }
+    } else if provider != "steam" {
+        return None;
+    }
+
+    // v0.1.1 opened SteamCMD successfully, but checked a non-existent
+    // `current/config/loginusers.vdf`. Recover that already authenticated
+    // account from SteamCMD's own success transcript and persist only its
+    // non-secret username.
+    let account = manager.steam_account_from_log()?;
+    if let Err(error) = db.upsert_provider_account("steam", "connected", Some(&account)) {
+        tracing::warn!(%error, "não foi possível migrar a sessão SteamCMD existente");
+    }
+    Some(account)
 }
 pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")?

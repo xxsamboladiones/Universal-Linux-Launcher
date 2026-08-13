@@ -120,6 +120,10 @@ pub struct LibraryItem {
     pub tags: Vec<String>,
     pub favorite: bool,
     pub hidden: bool,
+    /// Whether the item still belongs to/is exposed by its provider catalog.
+    /// This is intentionally separate from `installed`: an Epic entitlement
+    /// remains owned after its local files are removed.
+    pub owned: bool,
     pub installed: bool,
     pub play_count: u64,
     pub total_play_time_seconds: u64,
@@ -168,6 +172,7 @@ impl LibraryItem {
             tags: vec![],
             favorite: false,
             hidden: false,
+            owned: true,
             installed: true,
             play_count: 0,
             total_play_time_seconds: 0,

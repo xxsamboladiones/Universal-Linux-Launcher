@@ -9,6 +9,7 @@ mod process;
 mod product;
 mod providers;
 use commands::AppState;
+use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Precisa ser literalmente a primeira inicialização: o processo gráfico
@@ -35,10 +36,9 @@ pub fn run() {
     else {
         return;
     };
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            use tauri::Manager;
             let data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data)?;
             let db = database::Database::open(&data.join("orbit.db"))?;
@@ -46,6 +46,8 @@ pub fn run() {
             app.manage(AppState {
                 database: std::sync::Mutex::new(db),
                 process_manager: process::ProcessManager::new(data.join("orbit.db")),
+                transfer_manager: commands::TransferManager::default(),
+                library_sync_manager: commands::LibrarySyncManager::default(),
                 data_dir: data,
             });
             if let (Some(window), Some(icon)) =
@@ -100,6 +102,7 @@ pub fn run() {
             commands::set_hidden,
             commands::update_item,
             commands::delete_item,
+            commands::uninstall_item,
             commands::get_settings,
             commands::update_settings,
             commands::get_platform_overview,
@@ -113,6 +116,8 @@ pub fn run() {
             commands::store_provider_token,
             commands::queue_store_operation,
             commands::retry_operation,
+            commands::remove_store_operation,
+            commands::cancel_store_operation,
             commands::sync_store_library,
             commands::get_product_status,
             commands::set_autostart,
@@ -121,6 +126,14 @@ pub fn run() {
             commands::check_for_updates,
             commands::install_update
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Orbit Launcher")
+        .build(tauri::generate_context!())
+        .expect("error while building Orbit Launcher");
+    app.run(|app, event| {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            if let Some(state) = app.try_state::<AppState>() {
+                state.transfer_manager.cancel_all();
+                state.library_sync_manager.cancel_all();
+            }
+        }
+    });
 }

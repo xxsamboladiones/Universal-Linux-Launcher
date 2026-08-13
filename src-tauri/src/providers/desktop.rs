@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
 };
@@ -206,55 +206,151 @@ fn executable_exists(value: &str) -> bool {
 }
 
 pub fn resolve_icon(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
     let direct = Path::new(name);
     if direct.is_file() {
         return Some(direct.to_string_lossy().into_owned());
     }
-    let mut roots = vec![
-        PathBuf::from("/usr/share/icons"),
-        PathBuf::from("/usr/share/pixmaps"),
-    ];
+
+    resolve_icon_in_roots(name, &icon_roots())
+}
+
+fn icon_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        roots.insert(0, home.join(".local/share/icons"));
-        roots.insert(1, home.join(".icons"));
+        roots.push(
+            env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/share"))
+                .join("icons"),
+        );
+        roots.push(home.join(".icons"));
     }
-    let extensions = ["svg", "png", "webp", "xpm"];
-    let names = if Path::new(name).extension().is_some() {
-        vec![name.to_string()]
-    } else {
-        extensions
-            .iter()
-            .map(|extension| format!("{name}.{extension}"))
-            .collect()
-    };
+
+    for data_directory in env::var("XDG_DATA_DIRS")
+        .unwrap_or_else(|_| "/usr/local/share:/usr/share".into())
+        .split(':')
+        .filter(|path| !path.is_empty())
+    {
+        roots.push(Path::new(data_directory).join("icons"));
+        roots.push(Path::new(data_directory).join("pixmaps"));
+    }
+
+    let mut seen = HashSet::new();
+    roots.retain(|root| seen.insert(root.clone()));
+    roots
+}
+
+fn resolve_icon_in_roots(name: &str, roots: &[PathBuf]) -> Option<String> {
+    let names = icon_filenames(name);
+
+    // Alguns pacotes (inclusive utilitários de distribuição) instalam o
+    // arquivo diretamente em /usr/share/icons, fora de um tema.
     for root in roots {
-        if root.ends_with("pixmaps") {
-            for filename in &names {
-                let path = root.join(filename);
-                if path.is_file() {
-                    return Some(path.to_string_lossy().into_owned());
-                }
-            }
+        if let Some(icon) = first_existing(root, &names) {
+            return Some(icon);
+        }
+    }
+
+    for root in roots {
+        if root.file_name().is_some_and(|name| name == "pixmaps") {
             continue;
         }
-        for theme in ["hicolor", "breeze", "breeze-dark"] {
-            for size in ["scalable", "256x256", "128x128", "64x64", "48x48", "32x32"] {
+
+        for theme in ordered_directories(root, &["hicolor", "breeze", "breeze-dark"]) {
+            if let Some(icon) = first_existing(&theme, &names) {
+                return Some(icon);
+            }
+
+            let sizes = ordered_directories(
+                &theme,
+                &[
+                    "scalable", "512x512", "256x256", "192x192", "128x128", "96x96", "64x64",
+                    "48x48", "32x32", "24x24", "22x22", "16x16", "symbolic",
+                ],
+            );
+            for size in &sizes {
                 for context in ["apps", "applications"] {
-                    for filename in &names {
-                        for path in [
-                            root.join(theme).join(size).join(context).join(filename),
-                            root.join(theme).join(context).join(size).join(filename),
-                        ] {
-                            if path.is_file() {
-                                return Some(path.to_string_lossy().into_owned());
-                            }
-                        }
+                    if let Some(icon) = first_existing(&size.join(context), &names) {
+                        return Some(icon);
+                    }
+                }
+            }
+
+            // Alguns temas usam apps/<tamanho> em vez de <tamanho>/apps.
+            for context in ["apps", "applications"] {
+                let context_directory = theme.join(context);
+                if let Some(icon) = first_existing(&context_directory, &names) {
+                    return Some(icon);
+                }
+                for size in ordered_directories(
+                    &context_directory,
+                    &[
+                        "scalable", "512x512", "256x256", "128x128", "64x64", "48x48",
+                    ],
+                ) {
+                    if let Some(icon) = first_existing(&size, &names) {
+                        return Some(icon);
                     }
                 }
             }
         }
     }
     None
+}
+
+fn icon_filenames(name: &str) -> Vec<String> {
+    const EXTENSIONS: [&str; 5] = ["svg", "png", "webp", "xpm", "ico"];
+    let has_image_extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            EXTENSIONS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        });
+
+    if has_image_extension {
+        vec![name.to_string()]
+    } else {
+        EXTENSIONS
+            .iter()
+            .map(|extension| format!("{name}.{extension}"))
+            .collect()
+    }
+}
+
+fn first_existing(directory: &Path, names: &[String]) -> Option<String> {
+    names.iter().find_map(|filename| {
+        let path = directory.join(filename);
+        path.is_file().then(|| path.to_string_lossy().into_owned())
+    })
+}
+
+fn ordered_directories(parent: &Path, preferred: &[&str]) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    let mut seen = HashSet::new();
+
+    for name in preferred {
+        let path = parent.join(name);
+        if path.is_dir() && seen.insert(path.clone()) {
+            directories.push(path);
+        }
+    }
+
+    let mut remaining: Vec<_> = fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && !seen.contains(path))
+        .collect();
+    remaining.sort();
+    directories.extend(remaining);
+    directories
 }
 
 fn truthy(value: Option<&&str>) -> bool {
@@ -331,6 +427,19 @@ fn push_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_icon_root(test_name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "orbit-desktop-icons-{test_name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn parses_quoted_exec_and_placeholders() {
         assert_eq!(
@@ -370,5 +479,51 @@ mod tests {
             let entry = format!("[Desktop Entry]\nType=Application\nName=Game\nExec={exec}");
             assert!(parse(&entry, "game").unwrap().is_none(), "{exec}");
         }
+    }
+
+    #[test]
+    fn resolves_reverse_dns_icon_names() {
+        let root = temporary_icon_root("reverse-dns");
+        let icon = root
+            .join("hicolor")
+            .join("scalable")
+            .join("apps")
+            .join("org.cachyos.hello.svg");
+        fs::create_dir_all(icon.parent().unwrap()).unwrap();
+        fs::write(&icon, "<svg/>").unwrap();
+
+        assert_eq!(
+            resolve_icon_in_roots("org.cachyos.hello", std::slice::from_ref(&root)),
+            Some(icon.to_string_lossy().into_owned())
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_icons_from_unlisted_themes_and_sizes() {
+        let root = temporary_icon_root("custom-theme");
+        let icon = root
+            .join("CachyOS")
+            .join("310x310")
+            .join("apps")
+            .join("cachyos-tool.png");
+        fs::create_dir_all(icon.parent().unwrap()).unwrap();
+        fs::write(&icon, "png").unwrap();
+
+        assert_eq!(
+            resolve_icon_in_roots("cachyos-tool", std::slice::from_ref(&root)),
+            Some(icon.to_string_lossy().into_owned())
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn keeps_known_extensions_but_expands_dotted_icon_ids() {
+        assert_eq!(icon_filenames("app.svg"), ["app.svg"]);
+        assert!(icon_filenames("org.example.App")
+            .iter()
+            .any(|name| name == "org.example.App.png"));
     }
 }

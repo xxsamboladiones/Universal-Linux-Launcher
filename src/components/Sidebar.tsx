@@ -1,4 +1,5 @@
 import {
+  Boxes,
   Gamepad2,
   Grid2X2,
   Heart,
@@ -16,6 +17,7 @@ const nav = [
   ["application", "Aplicativos", Monitor],
   ["favorites", "Favoritos", Heart],
   ["steam", "Steam", LibraryBig],
+  ["epic", "Epic Games", Boxes],
   ["platforms", "Lojas e contas", Store],
 ] as const;
 export function Sidebar({

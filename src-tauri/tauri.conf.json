@@ -13,7 +13,7 @@
     "enableGTKAppId": true,
     "windows": [{ "title": "Orbit Launcher", "width": 1280, "height": 800, "minWidth": 900, "minHeight": 600 }],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https://cdn1.epicgames.com; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": []

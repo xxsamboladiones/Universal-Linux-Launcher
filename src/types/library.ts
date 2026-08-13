@@ -1,9 +1,53 @@
 export type ItemKind = "game" | "application" | "script" | "custom";
-export type Provider = "steam" | "epic" | "gog" | "battlenet" | "desktop" | "flatpak" | "appimage" | "custom";
-export interface GamescopeConfig { enabled: boolean; width: number | null; height: number | null; outputWidth: number | null; outputHeight: number | null; fps: number | null; fullscreen: boolean; upscaler: string | null }
-export interface CompatibilityConfig { runtimeId: string | null; prefixPath: string | null; steamOverlay: boolean; gamemode: boolean; mangohud: boolean; gamescope: GamescopeConfig; dxvk: boolean; vkd3d: boolean }
-export interface RuntimeInfo { id: string; name: string; family: "wine" | "proton"; path: string; managed: boolean }
-export interface CompatibilityOverview { runtimes: RuntimeInfo[]; gamemode: boolean; mangohud: boolean; gamescope: boolean; dxvk: boolean; vkd3d: boolean; sessionType: string; desktop: string; wayland: boolean; terminal: string | null; prefixRoot: string }
+export type Provider =
+  | "steam"
+  | "epic"
+  | "gog"
+  | "battlenet"
+  | "desktop"
+  | "flatpak"
+  | "appimage"
+  | "custom";
+export interface GamescopeConfig {
+  enabled: boolean;
+  width: number | null;
+  height: number | null;
+  outputWidth: number | null;
+  outputHeight: number | null;
+  fps: number | null;
+  fullscreen: boolean;
+  upscaler: string | null;
+}
+export interface CompatibilityConfig {
+  runtimeId: string | null;
+  prefixPath: string | null;
+  steamOverlay: boolean;
+  gamemode: boolean;
+  mangohud: boolean;
+  gamescope: GamescopeConfig;
+  dxvk: boolean;
+  vkd3d: boolean;
+}
+export interface RuntimeInfo {
+  id: string;
+  name: string;
+  family: "wine" | "proton";
+  path: string;
+  managed: boolean;
+}
+export interface CompatibilityOverview {
+  runtimes: RuntimeInfo[];
+  gamemode: boolean;
+  mangohud: boolean;
+  gamescope: boolean;
+  dxvk: boolean;
+  vkd3d: boolean;
+  sessionType: string;
+  desktop: string;
+  wayland: boolean;
+  terminal: string | null;
+  prefixRoot: string;
+}
 export interface LibraryItem {
   id: string;
   name: string;
@@ -20,6 +64,7 @@ export interface LibraryItem {
   tags: string[];
   favorite: boolean;
   hidden: boolean;
+  owned: boolean;
   installed: boolean;
   playCount: number;
   totalPlayTimeSeconds: number;

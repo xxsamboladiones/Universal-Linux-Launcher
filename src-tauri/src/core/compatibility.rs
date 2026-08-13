@@ -7,7 +7,10 @@ use std::{
 };
 
 use crate::{
-    core::{launch::LaunchSpec, model::CompatibilityConfig},
+    core::{
+        launch::{LaunchSpec, LaunchTarget},
+        model::CompatibilityConfig,
+    },
     error::{LauncherError, Result},
 };
 
@@ -296,64 +299,83 @@ pub fn apply(
     if expand_steam_options(spec)? {
         notes.push("Opções no formato Steam convertidas em variáveis de ambiente".into());
     }
+    if spec.target == LaunchTarget::JavaArchive {
+        notes.push(format!("Java Runtime: {}", spec.executable));
+    }
     if config.steam_overlay {
         enable_steam_overlay(spec)?;
-        notes.push("Steam Overlay injetado diretamente no processo do Proton".into());
+        notes.push(if spec.target == LaunchTarget::JavaArchive {
+            "Steam Overlay injetado diretamente no processo Java".into()
+        } else {
+            "Steam Overlay injetado diretamente no processo do jogo".into()
+        });
     }
-    if let Some(prefix) = &config.prefix_path {
-        spec.environment.insert("WINEPREFIX".into(), prefix.clone());
-    }
-    if config.dxvk {
-        spec.environment
-            .insert("DXVK_LOG_LEVEL".into(), "info".into());
-        notes.push("DXVK solicitado; use um prefixo que contenha DXVK".into());
-    }
-    if config.vkd3d {
-        spec.environment.insert("VKD3D_DEBUG".into(), "warn".into());
-        notes.push("VKD3D solicitado; use um prefixo que contenha VKD3D-Proton".into());
+    if spec.target == LaunchTarget::JavaArchive {
+        if config.prefix_path.is_some() || config.dxvk || config.vkd3d {
+            notes.push("Opções Wine, DXVK e VKD3D ignoradas para o processo Java nativo".into());
+        }
+    } else {
+        if let Some(prefix) = &config.prefix_path {
+            spec.environment.insert("WINEPREFIX".into(), prefix.clone());
+        }
+        if config.dxvk {
+            spec.environment
+                .insert("DXVK_LOG_LEVEL".into(), "info".into());
+            notes.push("DXVK solicitado; use um prefixo que contenha DXVK".into());
+        }
+        if config.vkd3d {
+            spec.environment.insert("VKD3D_DEBUG".into(), "warn".into());
+            notes.push("VKD3D solicitado; use um prefixo que contenha VKD3D-Proton".into());
+        }
     }
     if let Some(id) = &config.runtime_id {
-        let runtime = runtimes(data)
-            .into_iter()
-            .find(|r| &r.id == id)
-            .ok_or_else(|| LauncherError::ExecutableNotFound(format!("runtime {id}")))?;
-        if runtime.family == "proton" {
-            let prefix = config.prefix_path.clone().unwrap_or_else(|| {
-                data.join("prefixes")
-                    .join(safe_item_id(item_id))
-                    .to_string_lossy()
-                    .into_owned()
-            });
-            fs::create_dir_all(&prefix)?;
-            spec.environment
-                .insert("STEAM_COMPAT_DATA_PATH".into(), prefix);
-            let client_path = steam_client_path(Path::new(&runtime.path)).ok_or_else(|| {
-                LauncherError::ExecutableNotFound("diretório do cliente Steam".into())
-            })?;
-            spec.environment.insert(
-                "STEAM_COMPAT_CLIENT_INSTALL_PATH".into(),
-                client_path.to_string_lossy().into_owned(),
-            );
-            wrap(
-                spec,
-                Path::new(&runtime.path)
-                    .join("proton")
-                    .to_string_lossy()
-                    .into_owned(),
-                vec!["run".into()],
-            );
+        if spec.target == LaunchTarget::JavaArchive {
+            notes.push(format!(
+                "Runtime Wine/Proton {id} ignorado: arquivos JAR usam Java nativo"
+            ));
         } else {
-            let exe = if runtime.id == "system:wine" {
-                "wine".into()
+            let runtime = runtimes(data)
+                .into_iter()
+                .find(|r| &r.id == id)
+                .ok_or_else(|| LauncherError::ExecutableNotFound(format!("runtime {id}")))?;
+            if runtime.family == "proton" {
+                let prefix = config.prefix_path.clone().unwrap_or_else(|| {
+                    data.join("prefixes")
+                        .join(safe_item_id(item_id))
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                fs::create_dir_all(&prefix)?;
+                spec.environment
+                    .insert("STEAM_COMPAT_DATA_PATH".into(), prefix);
+                let client_path = steam_client_path(Path::new(&runtime.path)).ok_or_else(|| {
+                    LauncherError::ExecutableNotFound("diretório do cliente Steam".into())
+                })?;
+                spec.environment.insert(
+                    "STEAM_COMPAT_CLIENT_INSTALL_PATH".into(),
+                    client_path.to_string_lossy().into_owned(),
+                );
+                wrap(
+                    spec,
+                    Path::new(&runtime.path)
+                        .join("proton")
+                        .to_string_lossy()
+                        .into_owned(),
+                    vec!["run".into()],
+                );
             } else {
-                Path::new(&runtime.path)
-                    .join("bin/wine")
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            wrap(spec, exe, vec![]);
+                let exe = if runtime.id == "system:wine" {
+                    "wine".into()
+                } else {
+                    Path::new(&runtime.path)
+                        .join("bin/wine")
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                wrap(spec, exe, vec![]);
+            }
+            notes.push(format!("Runtime: {}", runtime.name));
         }
-        notes.push(format!("Runtime: {}", runtime.name));
     }
     if config.mangohud {
         if !available("mangohud") {
@@ -406,6 +428,8 @@ mod tests {
             args: args.into_iter().map(str::to_string).collect(),
             environment: HashMap::new(),
             working_directory: None,
+            target: LaunchTarget::Native,
+            terminal: false,
         }
     }
 
@@ -428,5 +452,27 @@ mod tests {
         expand_steam_options(&mut launch).unwrap();
         assert_eq!(launch.args, ["-windowed"]);
         assert_eq!(launch.environment.get("MANGOHUD").unwrap(), "1");
+    }
+
+    #[test]
+    fn java_archives_ignore_a_selected_proton_runtime() {
+        let mut launch = spec(vec!["-jar", "/games/test.jar"]);
+        launch.executable = "/games/jre/bin/java".into();
+        launch.target = LaunchTarget::JavaArchive;
+        let config = CompatibilityConfig {
+            runtime_id: Some("proton:/does/not/exist".into()),
+            prefix_path: Some("/tmp/prefix".into()),
+            dxvk: true,
+            vkd3d: true,
+            ..CompatibilityConfig::default()
+        };
+
+        let notes = apply(&mut launch, &config, Path::new("/tmp"), "custom:java").unwrap();
+
+        assert_eq!(launch.executable, "/games/jre/bin/java");
+        assert!(!launch.environment.contains_key("WINEPREFIX"));
+        assert!(!launch.environment.contains_key("DXVK_LOG_LEVEL"));
+        assert!(notes.iter().any(|note| note.contains("Java nativo")));
+        assert!(notes.iter().any(|note| note.contains("ignorado")));
     }
 }

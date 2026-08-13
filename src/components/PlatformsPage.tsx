@@ -8,13 +8,40 @@ import {
   HardDrive,
   ShieldCheck,
   RefreshCw,
+  Square,
+  Trash2,
 } from "lucide-react";
 import { usePlatform } from "../stores/platform";
-import type { StoreAccount } from "../types/platform";
-import type { StoreId } from "../types/platform";
+import type {
+  OperationState,
+  StoreAccount,
+  StoreId,
+  TransferOperation,
+} from "../types/platform";
 import { backend } from "../services/backend";
+import { transferProgress } from "../services/transfers";
 
 const formatBytes = (bytes: number) => `${(bytes / 1_000_000).toFixed(0)} MB`;
+const formatTransferBytes = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unit = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1_000)),
+    units.length - 1,
+  );
+  const value = bytes / 1_000 ** unit;
+  const digits = unit === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unit]}`;
+};
+const operationStateLabel: Record<OperationState, string> = {
+  queued: "Na fila",
+  running: "Baixando",
+  cancelling: "Cancelando",
+  cancelled: "Cancelado",
+  paused: "Pausado",
+  completed: "Concluído",
+  failed: "Falhou",
+};
 const stateLabel: Record<StoreAccount["state"], string> = {
   disconnected: "Não conectado",
   component_required: "Componente necessário",
@@ -48,11 +75,34 @@ export function PlatformsPage() {
   const [dependencyProgress, setDependencyProgress] = useState<
     Partial<Record<StoreId, DependencyProgress>>
   >({});
-  const { overview, loading, preparing, error, load, prepare, connect, retry } = usePlatform();
+  const {
+    overview,
+    loading,
+    preparing,
+    syncing,
+    removing,
+    error,
+    notice,
+    load,
+    prepare,
+    connect,
+    syncLibrary,
+    retry,
+    cancel,
+    remove,
+    applyOperationProgress,
+  } = usePlatform();
   useEffect(() => {
     void load();
   }, [load]);
-  useEffect(() => { const unlisten=listen("transfer-progress",()=>void load()); return ()=>{void unlisten.then(fn=>fn())}; },[load]);
+  useEffect(() => {
+    const unlisten = listen<TransferOperation>("transfer-progress", (event) => {
+      applyOperationProgress(event.payload);
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, [applyOperationProgress]);
   useEffect(() => {
     const unlisten = listen<DependencyProgress>("dependency-progress", (event) => {
       setDependencyProgress((current) => ({
@@ -62,6 +112,37 @@ export function PlatformsPage() {
     });
     return () => { void unlisten.then((stop) => stop()); };
   }, []);
+
+  const connectAccount = (account: StoreAccount) => {
+    if (account.provider !== "steam") {
+      return connect(account.provider);
+    }
+
+    const promptedUser = window.prompt(
+      "Usuário Steam (o Steam Guard será solicitado no terminal)",
+    );
+    const user = promptedUser?.trim();
+    if (!user) return Promise.resolve();
+
+    return connect("steam", user);
+  };
+
+  const handleAccountAction = (account: StoreAccount) => {
+    if (account.state === "component_required") {
+      return prepare(account.provider);
+    }
+    if (account.state === "connected" && account.provider === "epic") {
+      return syncLibrary("epic");
+    }
+    return connectAccount(account);
+  };
+
+  const removeOperation = (operation: TransferOperation) => {
+    const message = `Remover ${operation.itemId || operation.provider} da fila?`;
+    if (!window.confirm(message)) return;
+    void remove(operation.id);
+  };
+
   return (
     <div className="platform-page">
       <div className="hero compact">
@@ -73,6 +154,7 @@ export function PlatformsPage() {
         </span>
       </div>
       {error && <div className="report error">{error}</div>}
+      {notice && <div className="report" aria-live="polite">{notice}</div>}
       <section className="account-grid">
         {overview?.accounts.map((account) => (
           <article className="account" key={account.provider}>
@@ -98,9 +180,11 @@ export function PlatformsPage() {
               disabled={
                 loading ||
                 Boolean(preparing[account.provider]) ||
+                Boolean(syncing[account.provider]) ||
                 (account.state === "connected" && account.provider !== "epic")
               }
-              onClick={() => void (account.state === "component_required" ? prepare(account.provider) : account.state === "connected" && account.provider === "epic" ? backend.syncStoreLibrary("epic").then(()=>load()) : account.provider === "steam" ? backend.connectProvider("steam",window.prompt("Usuário Steam (o Steam Guard será solicitado no terminal)") || undefined) : connect(account.provider))}
+              aria-busy={Boolean(syncing[account.provider])}
+              onClick={() => void handleAccountAction(account)}
             >
               {account.state === "component_required" ? (
                 <>
@@ -109,7 +193,10 @@ export function PlatformsPage() {
                     ? progressLabel(dependencyProgress[account.provider] ?? null)
                     : "Preparar suporte"}
                 </>
-              ) : account.state === "connected" && account.provider === "epic" ? <> <RefreshCw size={16}/>Sincronizar biblioteca</> : (
+              ) : account.state === "connected" && account.provider === "epic" ? <>
+                <RefreshCw className={syncing.epic ? "spin" : ""} size={16}/>
+                {syncing.epic ? "Sincronizando…" : "Sincronizar biblioteca"}
+              </> : (
                 <>
                   <ExternalLink size={16} />
                   Conectar
@@ -122,7 +209,123 @@ export function PlatformsPage() {
       <div className="section-title"><div><p>FILA TRANSACIONAL</p><h2>Instalações e atualizações</h2></div><Download size={22}/></div>
       <div className="operation-create"><select value={operationProvider} onChange={event=>setOperationProvider(event.target.value as StoreId)}><option value="epic">Epic</option><option value="steam">SteamCMD</option><option value="gog">GOG</option><option value="battlenet">Battle.net</option></select><input value={operationItem} onChange={event=>setOperationItem(event.target.value)} placeholder="AppID ou identificador do jogo"/><button disabled={!operationItem.trim()} onClick={()=>void backend.queueStoreOperation(operationProvider,operationItem.trim(),"install").then(()=>{setOperationItem("");return load()})}><Download size={15}/>Adicionar instalação</button></div>
       <section className="dependency-list operation-list">
-        {overview?.operations.length ? overview.operations.map(operation => <div className="dependency" key={operation.id}><Boxes size={20}/><div><strong>{operation.itemId || operation.provider}</strong><small>{operation.provider} · {operation.action}</small>{operation.error && <small className="operation-error">{operation.error}</small>}</div><span className={operation.state}>{operation.state}</span>{operation.state === "failed" && <button onClick={()=>void retry(operation.id)}>Repetir</button>}</div>) : <p className="security-note">Nenhuma operação na fila.</p>}
+        {overview?.operations.length ? (
+          overview.operations.map((operation) => {
+            const progress = transferProgress(operation);
+            const hasMeasuredProgress = operation.totalBytes > 0;
+            const showProgress =
+              hasMeasuredProgress &&
+              (operation.state === "running" ||
+                operation.state === "cancelling" ||
+                operation.state === "cancelled" ||
+                operation.state === "paused" ||
+                operation.state === "completed");
+
+            return (
+              <div className="dependency operation-row" key={operation.id}>
+                <Boxes size={20} />
+                <div className="operation-content">
+                  <div className="operation-heading">
+                    <div>
+                      <strong>{operation.itemId || operation.provider}</strong>
+                      <small>
+                        {operation.provider} · {operation.action}
+                      </small>
+                    </div>
+                    <span className={`operation-state ${operation.state}`}>
+                      {operationStateLabel[operation.state]}
+                    </span>
+                  </div>
+                  {showProgress && (
+                    <div className="operation-progress">
+                      <div className="operation-progress-copy">
+                        <strong>{progress.toFixed(1)}%</strong>
+                        <span>
+                          {formatTransferBytes(operation.downloadedBytes)} /{" "}
+                          {formatTransferBytes(operation.totalBytes)}
+                          {operation.bytesPerSecond > 0 &&
+                            ` · ${formatTransferBytes(operation.bytesPerSecond)}/s`}
+                        </span>
+                      </div>
+                      <div
+                        className="operation-progress-track"
+                        role="progressbar"
+                        aria-label={`Download de ${operation.itemId || operation.provider}`}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round(progress)}
+                      >
+                        <div style={{ width: `${progress}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {(operation.state === "running" ||
+                    operation.state === "cancelling") &&
+                    !hasMeasuredProgress && (
+                    <small className="operation-waiting">
+                      {operation.state === "cancelling"
+                        ? "Aguardando o download encerrar…"
+                        : "Aguardando informações do download…"}
+                    </small>
+                  )}
+                  {operation.error && (
+                    <small className="operation-error">{operation.error}</small>
+                  )}
+                </div>
+                <div className="operation-actions">
+                  {(operation.state === "failed" ||
+                    operation.state === "cancelled") && (
+                    <button
+                      disabled={Boolean(removing[operation.id])}
+                      onClick={() => void retry(operation.id)}
+                    >
+                      Repetir
+                    </button>
+                  )}
+                  {operation.state === "running" && (
+                    <button
+                      className="operation-cancel"
+                      onClick={() => void cancel(operation.id)}
+                    >
+                      <Square size={12} />
+                      Cancelar
+                    </button>
+                  )}
+                  {operation.state === "cancelling" && (
+                    <button className="operation-cancel" disabled>
+                      <RefreshCw className="operation-removing-icon" size={14} />
+                      Cancelando…
+                    </button>
+                  )}
+                  {operation.state !== "running" &&
+                    operation.state !== "cancelling" && (
+                    <button
+                      className="operation-remove"
+                      disabled={Boolean(removing[operation.id])}
+                      aria-label={`Remover ${operation.itemId || operation.provider}`}
+                      title="Remover da fila"
+                      onClick={() => removeOperation(operation)}
+                    >
+                      {removing[operation.id] ? (
+                        <>
+                          <RefreshCw className="operation-removing-icon" size={14} />
+                          Removendo…
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 size={14} />
+                          Remover
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <p className="security-note">Nenhuma operação na fila.</p>
+        )}
       </section>
       <div className="section-title">
         <div>
