@@ -1,36 +1,37 @@
 pkgname=orbit-launcher
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
+_tag='v0.1.2-alpha.1'
 pkgdesc='Launcher universal de jogos e aplicativos para CachyOS e Arch Linux'
 arch=('x86_64')
-url='https://github.com/orbit-launcher/orbit-launcher'
+url='https://github.com/xxsamboladiones/Universal-Linux-Launcher'
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'openssl' 'curl' 'libsecret')
 makedepends=('cargo' 'pnpm' 'nodejs' 'clang' 'lld')
 optdepends=('steam: Steam e Steam Overlay' 'gamemode: otimizações para jogos' 'mangohud: métricas em jogo' 'gamescope: compositor para jogos' 'kwallet: armazenamento de credenciais no KDE')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/$_tag.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {
-  cd "$pkgname-$pkgver"
+  cd "Universal-Linux-Launcher-${_tag#v}"
   pnpm install --frozen-lockfile
   cargo fetch --locked --manifest-path src-tauri/Cargo.toml
 }
 
 build() {
-  cd "$pkgname-$pkgver"
+  cd "Universal-Linux-Launcher-${_tag#v}"
   pnpm build
   cargo build --release --locked --manifest-path src-tauri/Cargo.toml
 }
 
 check() {
-  cd "$pkgname-$pkgver"
+  cd "Universal-Linux-Launcher-${_tag#v}"
   pnpm test
   cargo test --locked --manifest-path src-tauri/Cargo.toml
 }
 
 package() {
-  cd "$pkgname-$pkgver"
+  cd "Universal-Linux-Launcher-${_tag#v}"
   install -Dm755 src-tauri/target/release/orbit-launcher "$pkgdir/usr/bin/orbit-launcher"
   install -Dm644 packaging/linux/io.orbit.launcher.desktop "$pkgdir/usr/share/applications/io.orbit.launcher.desktop"
   install -Dm644 packaging/linux/io.orbit.launcher.desktop "$pkgdir/usr/share/applications/orbit-launcher.desktop"
