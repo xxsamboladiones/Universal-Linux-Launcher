@@ -65,6 +65,33 @@ pub fn show_main(app: &AppHandle) {
     }
 }
 
+/// Retorna o caminho que continuará existindo depois que o processo atual
+/// terminar. Dentro de AppImage, `current_exe()` aponta para `/tmp/.mount_*`,
+/// enquanto `$APPIMAGE` aponta para o arquivo real escolhido pelo usuário.
+fn persistent_executable_path() -> Result<PathBuf> {
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        let path = PathBuf::from(appimage);
+        if path.as_os_str().is_empty() {
+            return Err(LauncherError::InvalidArguments(
+                "APPIMAGE contém um caminho vazio".into(),
+            ));
+        }
+        return Ok(path);
+    }
+    Ok(std::env::current_exe()?)
+}
+
+fn desktop_exec_path() -> Result<String> {
+    let executable = persistent_executable_path()?
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    if executable.contains(['\n', '\r']) {
+        return Err(LauncherError::InvalidArguments("caminho inválido".into()));
+    }
+    Ok(executable)
+}
+
 pub fn set_autostart(enabled: bool) -> Result<()> {
     let config = dirs::config_dir()
         .ok_or_else(|| LauncherError::LaunchFailed("XDG_CONFIG_HOME indisponível".into()))?;
@@ -77,13 +104,7 @@ pub fn set_autostart(enabled: bool) -> Result<()> {
         return Ok(());
     }
     fs::create_dir_all(&dir)?;
-    let executable = std::env::current_exe()?
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    if executable.contains(['\n', '\r']) {
-        return Err(LauncherError::InvalidArguments("caminho inválido".into()));
-    }
+    let executable = desktop_exec_path()?;
     fs::write(file,format!("[Desktop Entry]\nType=Application\nName=Orbit Launcher\nExec=\"{executable}\" --hidden\nIcon=io.orbit.launcher\nTerminal=false\nStartupWMClass=io.orbit.launcher\nX-KDE-autostart-after=panel\nX-GNOME-Autostart-enabled=true\n"))?;
     Ok(())
 }
@@ -102,7 +123,7 @@ pub fn status() -> ProductStatus {
     ProductStatus {
         autostart: autostart_enabled(),
         appimage: std::env::var_os("APPIMAGE").is_some(),
-        executable: std::env::current_exe()
+        executable: persistent_executable_path()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned(),
@@ -129,13 +150,7 @@ pub fn ensure_desktop_integration() -> Result<()> {
             changed |= write_if_changed(&directory.join(icon_name), bytes)?;
         }
     }
-    // current_exe() aponta para /tmp/.mount_* dentro de um AppImage. APPIMAGE
-    // contém o arquivo persistente que deve aparecer no desktop entry.
-    let executable = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_exe()?)
-        .to_string_lossy()
-        .replace('"', "\\\"");
+    let executable = desktop_exec_path()?;
     let desktop_icon = data
         .join("icons/hicolor/256x256/apps/orbit-launcher.png")
         .to_string_lossy()
