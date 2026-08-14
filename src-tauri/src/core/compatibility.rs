@@ -282,14 +282,15 @@ fn valid_steam_app_id(value: &str) -> Option<String> {
 
 fn steam_overlay_app_id(spec: &LaunchSpec, item_id: &str) -> String {
     for key in ["SteamOverlayGameId", "SteamAppId", "SteamGameId"] {
-        if let Some(value) = spec.environment.get(key).and_then(|value| valid_steam_app_id(value)) {
+        if let Some(value) = spec
+            .environment
+            .get(key)
+            .and_then(|value| valid_steam_app_id(value))
+        {
             return value;
         }
     }
-    if let Some(value) = item_id
-        .strip_prefix("steam:")
-        .and_then(valid_steam_app_id)
-    {
+    if let Some(value) = item_id.strip_prefix("steam:").and_then(valid_steam_app_id) {
         return value;
     }
     "480".into()
