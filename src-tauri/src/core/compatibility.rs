@@ -40,11 +40,36 @@ pub struct CompatibilityOverview {
     pub prefix_root: String,
 }
 
+fn executable_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    true
+}
+
+fn find_executable(command: &str) -> Option<PathBuf> {
+    let candidate = Path::new(command);
+    if candidate.components().count() > 1 {
+        return executable_file(candidate).then(|| candidate.to_path_buf());
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|directory| directory.join(command))
+        .find(|path| executable_file(path))
+}
+
 fn available(command: &str) -> bool {
-    Command::new("sh")
-        .args(["-c", &format!("command -v {command}")])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    find_executable(command).is_some()
 }
 
 fn runtime_roots(data: &Path) -> Vec<(PathBuf, bool, &'static str)> {
@@ -233,7 +258,9 @@ fn ensure_steam_running() -> Result<()> {
     if running() {
         return Ok(());
     }
-    Command::new("steam")
+    let steam = find_executable("steam")
+        .ok_or_else(|| LauncherError::ExecutableNotFound("steam".into()))?;
+    Command::new(steam)
         .arg("-silent")
         .spawn()
         .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?;
@@ -248,7 +275,27 @@ fn ensure_steam_running() -> Result<()> {
     ))
 }
 
-fn enable_steam_overlay(spec: &mut LaunchSpec) -> Result<()> {
+fn valid_steam_app_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty() && value.chars().all(|c| c.is_ascii_digit())).then(|| value.to_string())
+}
+
+fn steam_overlay_app_id(spec: &LaunchSpec, item_id: &str) -> String {
+    for key in ["SteamOverlayGameId", "SteamAppId", "SteamGameId"] {
+        if let Some(value) = spec.environment.get(key).and_then(|value| valid_steam_app_id(value)) {
+            return value;
+        }
+    }
+    if let Some(value) = item_id
+        .strip_prefix("steam:")
+        .and_then(valid_steam_app_id)
+    {
+        return value;
+    }
+    "480".into()
+}
+
+fn enable_steam_overlay(spec: &mut LaunchSpec, item_id: &str) -> Result<String> {
     ensure_steam_running()?;
     let root = steam_root().ok_or_else(|| {
         LauncherError::ExecutableNotFound("Steam nativa com gameoverlayrenderer.so".into())
@@ -277,9 +324,10 @@ fn enable_steam_overlay(spec: &mut LaunchSpec) -> Result<()> {
     }
     spec.environment
         .insert("ENABLE_VK_LAYER_VALVE_steam_overlay_1".into(), "1".into());
+    let app_id = steam_overlay_app_id(spec, item_id);
     spec.environment
-        .insert("SteamOverlayGameId".into(), "480".into());
-    Ok(())
+        .insert("SteamOverlayGameId".into(), app_id.clone());
+    Ok(app_id)
 }
 
 fn wrap(spec: &mut LaunchSpec, executable: String, mut prefix: Vec<String>) {
@@ -303,11 +351,11 @@ pub fn apply(
         notes.push(format!("Java Runtime: {}", spec.executable));
     }
     if config.steam_overlay {
-        enable_steam_overlay(spec)?;
+        let app_id = enable_steam_overlay(spec, item_id)?;
         notes.push(if spec.target == LaunchTarget::JavaArchive {
-            "Steam Overlay injetado diretamente no processo Java".into()
+            format!("Steam Overlay injetado diretamente no processo Java (AppID {app_id})")
         } else {
-            "Steam Overlay injetado diretamente no processo do jogo".into()
+            format!("Steam Overlay injetado diretamente no processo do jogo (AppID {app_id})")
         });
     }
     if spec.target == LaunchTarget::JavaArchive {
@@ -452,6 +500,27 @@ mod tests {
         expand_steam_options(&mut launch).unwrap();
         assert_eq!(launch.args, ["-windowed"]);
         assert_eq!(launch.environment.get("MANGOHUD").unwrap(), "1");
+    }
+
+    #[test]
+    fn overlay_uses_the_real_steam_item_app_id() {
+        let launch = spec(vec![]);
+        assert_eq!(steam_overlay_app_id(&launch, "steam:730"), "730");
+    }
+
+    #[test]
+    fn overlay_preserves_an_explicit_app_id() {
+        let mut launch = spec(vec![]);
+        launch
+            .environment
+            .insert("SteamOverlayGameId".into(), "12345".into());
+        assert_eq!(steam_overlay_app_id(&launch, "steam:730"), "12345");
+    }
+
+    #[test]
+    fn overlay_keeps_a_compatible_fallback_for_non_steam_items() {
+        let launch = spec(vec![]);
+        assert_eq!(steam_overlay_app_id(&launch, "epic:example"), "480");
     }
 
     #[test]
