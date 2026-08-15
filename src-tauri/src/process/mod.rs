@@ -38,16 +38,13 @@ impl ProcessManager {
 
     pub fn track(&self, item_id: String, session_id: i64, mut child: Child) {
         let root_pid = child.id();
-        self.running
-            .lock()
-            .expect("process lock poisoned")
-            .insert(
-                item_id.clone(),
-                TrackedSession {
-                    session_id,
-                    display_pid: root_pid,
-                },
-            );
+        self.running.lock().expect("process lock poisoned").insert(
+            item_id.clone(),
+            TrackedSession {
+                session_id,
+                display_pid: root_pid,
+            },
+        );
 
         let running = Arc::clone(&self.running);
         let database_path = self.database_path.clone();
@@ -55,12 +52,7 @@ impl ProcessManager {
             let started = Instant::now();
             let strategy = tracking_strategy(&item_id);
             let exit_code = monitor_lifetime(
-                &item_id,
-                session_id,
-                root_pid,
-                &strategy,
-                &mut child,
-                &running,
+                &item_id, session_id, root_pid, &strategy, &mut child, &running,
             );
             let duration = started.elapsed().as_secs();
 
@@ -97,12 +89,7 @@ fn tracking_strategy(item_id: &str) -> TrackingStrategy {
     }
 }
 
-fn update_display_pid(
-    running: &RunningSessions,
-    item_id: &str,
-    session_id: i64,
-    display_pid: u32,
-) {
+fn update_display_pid(running: &RunningSessions, item_id: &str, session_id: i64, display_pid: u32) {
     let mut running = running.lock().expect("process lock poisoned");
     if let Some(session) = running.get_mut(item_id) {
         if session.session_id == session_id {
@@ -139,7 +126,8 @@ fn process_identity(pid: u32) -> Option<ProcessIdentity> {
 
 #[cfg(target_os = "linux")]
 fn process_identity_alive(identity: ProcessIdentity) -> bool {
-    process_identity(identity.pid).is_some_and(|current| current.start_ticks == identity.start_ticks)
+    process_identity(identity.pid)
+        .is_some_and(|current| current.start_ticks == identity.start_ticks)
 }
 
 #[cfg(target_os = "linux")]
@@ -292,7 +280,9 @@ fn monitor_lifetime(
     if !root_reaped {
         match child.wait() {
             Ok(status) => root_exit_code = status.code(),
-            Err(error) => tracing::warn!(%error, pid=root_pid, "Falha ao reaproveitar processo raiz"),
+            Err(error) => {
+                tracing::warn!(%error, pid=root_pid, "Falha ao reaproveitar processo raiz")
+            }
         }
     }
     root_exit_code
