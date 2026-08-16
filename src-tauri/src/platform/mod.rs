@@ -1,3 +1,4 @@
+pub(crate) mod gog;
 mod phase3;
 
 use crate::database::Database;
@@ -134,7 +135,7 @@ pub fn overview(root: &Path, db: &Database) -> PlatformOverview {
             display_name: name.into(),
             description: description.into(),
             state: connection_state(ready, provider_connected(root, db, id)),
-            library_size: 0,
+            library_size: db.provider_item_count(id).unwrap_or_default(),
             dependency_ids: deps.into_iter().map(str::to_string).collect(),
             strategy: strategy.into(),
         }
