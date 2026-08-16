@@ -556,6 +556,7 @@ impl CredentialVault {
 pub struct ProviderManager {
     root: PathBuf,
 }
+const GOG_CLIENT_ID: &str = "46899977096215655";
 pub const GOG_LOGIN_URL: &str = "https://auth.gog.com/auth?client_id=46899977096215655&redirect_uri=https%3A%2F%2Fembed.gog.com%2Fon_login_success%3Forigin%3Dclient&response_type=code&layout=galaxy";
 
 impl ProviderManager {
@@ -763,10 +764,14 @@ fn valid_gog_authorization_code(input: &str) -> Result<String> {
 }
 
 fn valid_gog_auth_file(path: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
         return false;
     };
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 64 * 1024 {
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > 64 * 1024
+    {
         return false;
     }
     let Ok(bytes) = fs::read(path) else {
@@ -775,6 +780,12 @@ fn valid_gog_auth_file(path: &Path) -> bool {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return false;
     };
+    // GOGDL 1.1 stores credentials under the OAuth client id, while older
+    // releases and Heroic installations may keep the fields at the root.
+    valid_gog_auth_value(&value) || value.get(GOG_CLIENT_ID).is_some_and(valid_gog_auth_value)
+}
+
+fn valid_gog_auth_value(value: &serde_json::Value) -> bool {
     ["access_token", "refresh_token", "user_id"]
         .into_iter()
         .all(|field| {
@@ -1217,6 +1228,20 @@ mod tests {
         )
         .unwrap();
         assert!(provider.gog_authenticated());
+
+        fs::write(
+            &path,
+            br#"{"46899977096215655":{"access_token":"access","refresh_token":"refresh","user_id":"user","expires_in":3600}}"#,
+        )
+        .unwrap();
+        assert!(provider.gog_authenticated());
+
+        fs::write(
+            &path,
+            br#"{"untrusted-client":{"access_token":"access","refresh_token":"refresh","user_id":"user"}}"#,
+        )
+        .unwrap();
+        assert!(!provider.gog_authenticated());
     }
 
     #[test]

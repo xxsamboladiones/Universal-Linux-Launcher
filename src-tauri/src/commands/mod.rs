@@ -963,6 +963,17 @@ pub async fn connect_provider(
         tauri::async_runtime::spawn_blocking(move || run_gog_auth_command(command, args))
             .await
             .map_err(|error| LauncherError::LaunchFailed(error.to_string()))??;
+        #[cfg(target_os = "linux")]
+        if let Ok(metadata) = std::fs::symlink_metadata(&auth_path) {
+            if metadata.file_type().is_symlink() {
+                return Err(LauncherError::ProviderUnavailable(
+                    "O arquivo de autenticação do GOG não pode ser um link simbólico".into(),
+                ));
+            }
+            if metadata.is_file() {
+                std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
         let manager = platform::ProviderManager::new(data_dir);
         if !manager.gog_authenticated() {
             return Err(LauncherError::ProviderUnavailable(
