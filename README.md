@@ -2,7 +2,18 @@
 
 Launcher universal de jogos e aplicativos para CachyOS, Arch Linux, KDE Plasma e Wayland. O Orbit reúne biblioteca local, compatibilidade Wine/Proton, ferramentas de desempenho e provedores de lojas em uma interface única.
 
-Versão atual: **0.1.2**
+Versão atual: **0.1.3-alpha.1**
+
+## Novidades da **v0.1.3-alpha.1**
+
+- sistema completo de temas declarativos com visuais internos, importação e exportação de `.orbit-theme`, aplicação dinâmica, persistência e validação segura;
+- modos de aparência Manual, Automático e Sistema, com transições e fallback para o tema padrão;
+- temas automáticos baseados no wallpaper com Pywal/Pywal16 opcional ou gerador nativo do Orbit;
+- detecção de wallpaper no KDE Plasma 5/6, compatibilidade Wayland/X11, watcher com debounce, cache SHA-256 e normalização de contraste;
+- integração GOG gerenciada com autenticação pelo navegador, catálogo da conta, GOGDL e fila de instalação, atualização e verificação;
+- capas verticais oficiais do GamesDB e sincronização GOG diretamente pela página da biblioteca;
+- correção da remoção de atalhos personalizados que possuem histórico de execução;
+- remoção do suporte experimental ao Battle.net, que não oferecia execução confiável pelo Wine.
 
 ## Novidades da **v0.1.2-alpha**
 
@@ -28,7 +39,9 @@ Grande atualização de estabilidade e infraestrutura: melhorias na integração
 - seleção de Proton/Wine e prefixo por jogo;
 - GameMode, MangoHud, Gamescope, DXVK e VKD3D;
 - suporte a jogos não Steam com Steam Overlay;
-- painel para Steam, Epic Games, GOG e Battle.net;
+- temas internos e externos baseados em tokens, sem CSS ou código arbitrário;
+- temas automáticos via Pywal opcional ou paleta nativa derivada do wallpaper;
+- painel para Steam, Epic Games e GOG;
 - fila persistente de instalações e atualizações;
 - Secret Service/KWallet para credenciais e sessões;
 - bandeja, instância única, autostart, backup e restauração;
@@ -56,8 +69,9 @@ O botão **Preparar suporte** baixa e instala automaticamente os componentes sup
 
 - Steam: SteamCMD, autenticação interativa e Steam Guard;
 - Epic Games: Legendary;
-- GOG: GOGDL;
-- Battle.net: cliente oficial encapsulado em Wine quando os componentes verificáveis estiverem disponíveis.
+- GOG: GOGDL, autenticação pelo navegador e catálogo da conta.
+
+O suporte experimental ao Battle.net foi removido nesta versão porque o launcher oficial não apresenta execução confiável no Wine. Ele poderá ser reavaliado futuramente sem afetar as integrações existentes.
 
 O SteamCMD não substitui o Steam Desktop em todos os jogos. Steamworks, DRM e Steam Overlay ainda podem exigir o cliente oficial.
 
@@ -102,4 +116,4 @@ Componentes gerenciados possuem URL HTTPS e SHA-256 conhecidos. Manifestos exter
 
 Senhas não são armazenadas no SQLite. Tokens usam Secret Service/KWallet. O Orbit não possui telemetria e mantém seus dados nos diretórios XDG da aplicação.
 
-Consulte o [guia do usuário](docs/USER_GUIDE.md), a [arquitetura](ARCHITECTURE.md), o [guia de desenvolvimento](DEVELOPMENT.md) e o [processo de release](docs/RELEASE.md).
+Consulte o [guia do usuário](docs/USER_GUIDE.md), a [arquitetura](ARCHITECTURE.md), o [guia de desenvolvimento](DEVELOPMENT.md), a [documentação de temas](docs/THEMES.md), os [temas automáticos](docs/AUTOMATIC-THEMES.md) e o [processo de release](docs/RELEASE.md).
