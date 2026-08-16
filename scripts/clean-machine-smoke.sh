@@ -6,7 +6,6 @@ test -x "$binary"
 
 tmpdir=$(mktemp -d)
 logfile="$tmpdir/orbit.log"
-pidfile="$tmpdir/orbit.pid"
 pid=""
 cleanup() {
   if [[ -n "$pid" ]]; then
@@ -38,16 +37,30 @@ if ! command -v xvfb-run >/dev/null 2>&1; then
   exit 0
 fi
 
+# Desktop cache refresh is optional integration work and is not part of this
+# clean-profile test. On a headless runner, kbuildsycoca6 can wait for a KDE
+# session and block Orbit startup. Stub both commands so we test Orbit itself.
+stub_bin="$tmpdir/bin"
+mkdir -p "$stub_bin"
+cat >"$stub_bin/gtk-update-icon-cache" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$stub_bin/kbuildsycoca6" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$stub_bin/gtk-update-icon-cache" "$stub_bin/kbuildsycoca6"
+export PATH="$stub_bin:$PATH"
+
 run_sandboxed() {
   dbus-run-session -- xvfb-run -a -s "-screen 0 1280x720x24 -nolisten tcp" bash -c '
     set -euo pipefail
     binary=$1
     logfile=$2
-    pidfile=$3
 
-    "$binary" --hidden >"$logfile" 2>&1 &
+    timeout --kill-after=5s 30s "$binary" --hidden >"$logfile" 2>&1 &
     first_pid=$!
-    echo "$first_pid" >"$pidfile"
 
     for _ in $(seq 1 100); do
       if [[ -f "$XDG_DATA_HOME/io.orbit.launcher/orbit.db" ]]; then
@@ -63,17 +76,14 @@ run_sandboxed() {
 
     test -f "$XDG_DATA_HOME/io.orbit.launcher/orbit.db"
 
-    if command -v busctl >/dev/null 2>&1; then
-      busctl --user --no-pager list \
-        | awk "{print \$1}" \
-        | grep -Fx "io.orbit.launcher.SingleInstance"
-    fi
+    socket="$XDG_RUNTIME_DIR/orbit-launcher.sock"
+    test -S "$socket"
 
     before_count=$(pgrep -x orbit-launcher | wc -l)
     test "$before_count" -ge 1
 
     set +e
-    timeout 5s "$binary" --hidden >>"$logfile" 2>&1
+    timeout --kill-after=5s 5s "$binary" --hidden >>"$logfile" 2>&1
     second_status=$?
     set -e
 
@@ -87,7 +97,7 @@ run_sandboxed() {
 
     kill "$first_pid" 2>/dev/null || true
     wait "$first_pid" 2>/dev/null || true
-  ' _ "$binary" "$logfile" "$pidfile"
+  ' _ "$binary" "$logfile"
 }
 
 run_sandboxed &
