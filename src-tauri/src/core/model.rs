@@ -19,6 +19,16 @@ impl Default for AppSettings {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArgumentPreset {
+    pub id: String,
+    pub name: String,
+    pub arguments: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GamescopeConfig {

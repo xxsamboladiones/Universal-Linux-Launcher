@@ -752,6 +752,42 @@ pub fn update_settings(settings: AppSettings, state: State<AppState>) -> Result<
 }
 
 #[tauri::command]
+pub fn list_argument_presets(state: State<AppState>) -> Result<Vec<crate::core::model::ArgumentPreset>> {
+    state
+        .database
+        .lock()
+        .expect("database lock poisoned")
+        .list_argument_presets()
+}
+
+#[tauri::command]
+pub fn save_argument_preset(preset: crate::core::model::ArgumentPreset, state: State<AppState>) -> Result<()> {
+    state
+        .database
+        .lock()
+        .expect("database lock poisoned")
+        .save_argument_preset(&preset)
+}
+
+#[tauri::command]
+pub fn delete_argument_preset(id: String, state: State<AppState>) -> Result<()> {
+    state
+        .database
+        .lock()
+        .expect("database lock poisoned")
+        .delete_argument_preset(&id)
+}
+
+#[tauri::command]
+pub fn get_argument_preset(id: String, state: State<AppState>) -> Result<Option<crate::core::model::ArgumentPreset>> {
+    state
+        .database
+        .lock()
+        .expect("database lock poisoned")
+        .get_argument_preset(&id)
+}
+
+#[tauri::command]
 pub fn update_item(item: ItemInput, state: State<AppState>) -> Result<LibraryItem> {
     let extracted_icon = if item.provider == ProviderKind::Custom && item.icon.is_none() {
         item.executable

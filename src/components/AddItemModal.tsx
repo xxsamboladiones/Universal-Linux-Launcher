@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { FolderOpen, X } from "lucide-react";
+import { FolderOpen, X, Save, Bookmark, Trash2, ChevronDown } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { backend } from "../services/backend";
-import type { CompatibilityConfig, ItemKind, LibraryItem, RuntimeInfo } from "../types/library";
+import type { CompatibilityConfig, ItemKind, LibraryItem, RuntimeInfo, ArgumentPreset } from "../types/library";
 
 interface Props {
   onClose: () => void;
@@ -47,6 +47,29 @@ export function AddItemModal({ onClose, onSaved, item }: Props) {
   useEffect(() => { void backend.compatibility().then((value) => setRuntimes(value.runtimes)).catch(() => undefined); }, []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [argumentPresets, setArgumentPresets] = useState<ArgumentPreset[]>([]);
+  const [showPresetMenu, setShowPresetMenu] = useState(false);
+  const [showSavePresetDialog, setShowSavePresetDialog] = useState(false);
+  const [newPresetName, setNewPresetName] = useState("");
+  
+  useEffect(() => {
+    void backend.listArgumentPresets().then((presets) => setArgumentPresets(presets)).catch(() => undefined);
+  }, []);
+
+  // Fechar dropdown quando clicar fora
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (showPresetMenu && !target.closest('.preset-dropdown-container')) {
+        setShowPresetMenu(false);
+      }
+    };
+
+    if (showPresetMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showPresetMenu]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
@@ -96,6 +119,61 @@ export function AddItemModal({ onClose, onSaved, item }: Props) {
       title: "Selecionar diretório de trabalho",
     });
     if (selected) setWorkingDirectory(selected);
+  };
+
+  const loadArgumentPreset = async (presetId: string) => {
+    try {
+      const preset = await backend.getArgumentPreset(presetId);
+      if (preset) {
+        setArgumentsText(preset.arguments.join("\n"));
+        setShowPresetMenu(false);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar preset:', error);
+    }
+  };
+
+  const saveArgumentPreset = async () => {
+    if (!newPresetName.trim()) {
+      setError("Nome do preset é obrigatório.");
+      return;
+    }
+    
+    const currentArguments = argumentsText
+      .split("\n")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    
+    if (currentArguments.length === 0) {
+      setError("Não há argumentos para salvar.");
+      return;
+    }
+
+    const newPreset: ArgumentPreset = {
+      id: `preset:${Date.now()}`,
+      name: newPresetName.trim(),
+      arguments: currentArguments,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      await backend.saveArgumentPreset(newPreset);
+      setArgumentPresets([...argumentPresets, newPreset]);
+      setNewPresetName("");
+      setShowSavePresetDialog(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const deleteArgumentPreset = async (presetId: string) => {
+    try {
+      await backend.deleteArgumentPreset(presetId);
+      setArgumentPresets(argumentPresets.filter((p) => p.id !== presetId));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
   return (
     <div
@@ -159,13 +237,86 @@ export function AddItemModal({ onClose, onSaved, item }: Props) {
               </button>
             </div>
           </label>
-          <label className="wide">
-            Argumentos <small>um argumento por linha</small>
+          <div className="argument-container">
+            <div className="argument-header">
+              <label>Argumentos <small>um argumento por linha</small></label>
+              <div className="preset-buttons">
+                <button
+                  type="button"
+                  className="icon"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setShowSavePresetDialog(true);
+                  }}
+                  title="Salvar argumentos como preset"
+                >
+                  <Save size={14} />
+                  <span>Salvar</span>
+                </button>
+                <div className="preset-dropdown-container">
+                  <button
+                    type="button"
+                    className="icon"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setShowPresetMenu(!showPresetMenu);
+                    }}
+                    title="Carregar preset de argumentos"
+                  >
+                    <Bookmark size={14} />
+                    <span>Carregar</span>
+                    <ChevronDown size={14} />
+                  </button>
+                  {showPresetMenu && (
+                    <div className="preset-dropdown">
+                      {argumentPresets.length === 0 ? (
+                        <div className="preset-empty">
+                          Nenhum preset salvo
+                        </div>
+                      ) : (
+                        argumentPresets.map((preset) => (
+                          <div
+                            key={preset.id}
+                            className="preset-item"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              loadArgumentPreset(preset.id);
+                            }}
+                          >
+                            <div className="preset-info">
+                              <div className="preset-name">{preset.name}</div>
+                              <div className="preset-count">
+                                {preset.arguments.length} argumento(s)
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="preset-delete"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                deleteArgumentPreset(preset.id);
+                              }}
+                              title="Excluir preset"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
             <textarea
               value={argumentsText}
               onChange={(event) => setArgumentsText(event.target.value)}
             />
-          </label>
+          </div>
           <label className="wide">
             Diretório de trabalho
             <div className="path-input">
@@ -226,6 +377,54 @@ export function AddItemModal({ onClose, onSaved, item }: Props) {
             />
           </label>
         </div>
+        
+        {showSavePresetDialog && (
+          <div 
+            className="preset-dialog-overlay"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) {
+                setShowSavePresetDialog(false);
+                setNewPresetName("");
+              }
+            }}
+          >
+            <div className="preset-dialog">
+              <h3>Salvar Preset de Argumentos</h3>
+              <label>
+                Nome do preset
+                <input
+                  type="text"
+                  value={newPresetName}
+                  onChange={(event) => setNewPresetName(event.target.value)}
+                  placeholder="Ex: Proton GE padrão"
+                  autoFocus
+                />
+              </label>
+              <div className="preset-dialog-actions">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowSavePresetDialog(false);
+                    setNewPresetName("");
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void saveArgumentPreset();
+                  }}
+                >
+                  Salvar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>
             Cancelar

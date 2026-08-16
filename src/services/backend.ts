@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  ArgumentPreset,
   ItemInput,
   LibraryItem,
   ScanReport,
@@ -223,4 +224,12 @@ export const backend = {
   importBackup: (path: string) => invoke<void>("import_backup", { path }),
   checkUpdates: () => invoke<UpdateStatus>("check_for_updates"),
   installUpdate: () => invoke<void>("install_update"),
+  listArgumentPresets: () =>
+    invoke<ArgumentPreset[]>("list_argument_presets"),
+  saveArgumentPreset: (preset: ArgumentPreset) =>
+    invoke<void>("save_argument_preset", { preset }),
+  deleteArgumentPreset: (id: string) =>
+    invoke<void>("delete_argument_preset", { id }),
+  getArgumentPreset: (id: string) =>
+    invoke<ArgumentPreset | null>("get_argument_preset", { id }),
 };
