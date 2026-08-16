@@ -106,3 +106,11 @@ export interface AppSettings {
   confirmBeforeRemove: boolean;
   preferredTerminal: string | null;
 }
+
+export interface ArgumentPreset {
+  id: string;
+  name: string;
+  arguments: string[];
+  createdAt: string;
+  updatedAt: string;
+}

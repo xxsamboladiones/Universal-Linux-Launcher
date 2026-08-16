@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use crate::platform::Operation;
 use crate::{
-    core::model::{AppSettings, ItemKind, LibraryItem, ProviderKind},
+    core::model::{AppSettings, ArgumentPreset, ItemKind, LibraryItem, ProviderKind},
     error::Result,
 };
 
@@ -42,6 +42,10 @@ const MIGRATIONS: &[&str] = &[
      SET installed=0,updated_at=CURRENT_TIMESTAMP
      WHERE provider='epic' AND installed=1
        AND (working_directory IS NULL OR trim(working_directory)='');",
+    "CREATE TABLE argument_presets(
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, arguments TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );",
 ];
 
 pub struct Database {
@@ -281,6 +285,61 @@ impl Database {
         let value = serde_json::to_string(settings).unwrap_or_else(|_| "{}".into());
         self.conn.execute("INSERT INTO settings(key,value) VALUES('app',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value])?;
         Ok(())
+    }
+
+    pub fn list_argument_presets(&self) -> Result<Vec<ArgumentPreset>> {
+        let mut query = self.conn.prepare(
+            "SELECT id,name,arguments,created_at,updated_at FROM argument_presets ORDER BY name COLLATE NOCASE"
+        )?;
+        let presets = query
+            .query_map([], |row| {
+                Ok(ArgumentPreset {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    arguments: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default(),
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(presets)
+    }
+
+    pub fn save_argument_preset(&self, preset: &ArgumentPreset) -> Result<()> {
+        let args_json = serde_json::to_string(&preset.arguments).unwrap_or_else(|_| "[]".into());
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO argument_presets(id,name,arguments,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, arguments=excluded.arguments, updated_at=excluded.updated_at",
+            params![&preset.id, &preset.name, &args_json, &preset.created_at, &now],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_argument_preset(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM argument_presets WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    pub fn get_argument_preset(&self, id: &str) -> Result<Option<ArgumentPreset>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id,name,arguments,created_at,updated_at FROM argument_presets WHERE id=?1",
+                [id],
+                |row| {
+                    Ok(ArgumentPreset {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        arguments: serde_json::from_str(&row.get::<_, String>(2)?)
+                            .unwrap_or_default(),
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     pub fn provider_account(&self, provider: &str) -> Result<Option<ProviderAccountRecord>> {

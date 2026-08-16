@@ -1,5 +1,4 @@
 name: CI
-
 on:
   push:
   pull_request:
@@ -19,7 +18,6 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rustfmt, clippy }
-
       - name: Dependências Linux
         run: |
           sudo apt-get update
@@ -31,7 +29,6 @@ jobs:
             libfuse2 \
             xvfb \
             dbus-x11
-
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
@@ -50,7 +47,6 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
-
       - name: Dependências Linux
         run: |
           sudo apt-get update
@@ -62,22 +58,19 @@ jobs:
             libfuse2 \
             xvfb \
             dbus-x11
-
       - run: pnpm install --frozen-lockfile
       - run: pnpm tauri build
-
       - name: Smoke test em perfil limpo
         env:
           LIBGL_ALWAYS_SOFTWARE: "true"
+          LIBGL_DRI3_DISABLE: "1"
+          MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
           WEBKIT_DISABLE_DMABUF_RENDERER: "1"
           WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+          GDK_BACKEND: x11
           RUST_BACKTRACE: "1"
           RUST_LOG: "info"
-        run: |
-          dbus-run-session -- \
-            scripts/clean-machine-smoke.sh \
-            src-tauri/target/release/orbit-launcher
-
+        run: scripts/clean-machine-smoke.sh src-tauri/target/release/orbit-launcher
       - name: Validar AppImage
         run: |
           APPIMAGE="$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' -print -quit)"
@@ -86,7 +79,6 @@ jobs:
             exit 1
           fi
           scripts/validate-appimage.sh "$APPIMAGE"
-
       - uses: actions/upload-artifact@v4
         with:
           name: orbit-linux-bundles
