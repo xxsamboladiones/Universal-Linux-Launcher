@@ -31,10 +31,6 @@ pub fn generate(
     manual: Option<String>,
 ) -> Result<AutomaticTheme> {
     let influence = influence.min(100);
-    let path = match manual {
-        Some(path) => wallpaper::validate(&PathBuf::from(path))?,
-        None => wallpaper::current_wallpaper()?,
-    };
     let source = providers::pywal_status();
     if source_preference != "native" && source.available {
         if let Some(palette) = providers::pywal_palette(influence, color_mode)? {
@@ -42,11 +38,17 @@ pub fn generate(
                 tokens: palette.tokens(),
                 palette,
                 source: source.provider,
-                wallpaper_path: path.to_string_lossy().into(),
+                wallpaper_path: providers::pywal_wallpaper_path()
+                    .or(manual.clone())
+                    .unwrap_or_else(|| "Wallpaper do Pywal".into()),
                 palette_hash: "pywal".into(),
             });
         }
     }
+    let path = match manual {
+        Some(path) => wallpaper::validate(&PathBuf::from(path))?,
+        None => wallpaper::current_wallpaper()?,
+    };
     let (palette, hash) = providers::native_palette(&path, influence, color_mode)?;
     let key = format!("{hash}-{influence}-{color_mode}");
     let palette = cache::load(&key).unwrap_or(palette);

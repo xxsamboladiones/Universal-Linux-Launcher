@@ -75,6 +75,21 @@ pub fn pywal_palette(influence: u8, mode: &str) -> Result<Option<ColorPalette>> 
         mode,
     )?))
 }
+
+/// O caminho é informativo para a UI; jamais é usado como comando ou para
+/// abrir arquivos sem a validação do provider nativo.
+pub fn pywal_wallpaper_path() -> Option<String> {
+    let home = dirs::home_dir()?;
+    let bytes = fs::read(home.join(".cache/wal/colors.json")).ok()?;
+    if bytes.len() > 128 * 1024 {
+        return None;
+    }
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()?
+        .get("wallpaper")?
+        .as_str()
+        .map(str::to_owned)
+}
 pub fn native_palette(path: &Path, influence: u8, mode: &str) -> Result<(ColorPalette, String)> {
     let bytes = fs::read(path)?;
     let hash = format!("{:x}", Sha256::digest(&bytes));

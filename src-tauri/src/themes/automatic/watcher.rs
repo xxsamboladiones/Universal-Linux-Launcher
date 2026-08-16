@@ -2,9 +2,13 @@ use super::generate;
 use crate::commands::AppState;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    path::Path,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -19,39 +23,44 @@ impl PywalWatcher {
             return Err("diretório pessoal indisponível".into());
         };
         let cache = home.join(".cache");
+        let wal_dir = cache.join("wal");
         if !cache.is_dir() {
             return Err("cache do usuário indisponível".into());
         }
-        let last = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
+        let generation = Arc::new(AtomicU64::new(0));
         let callback_app = app.clone();
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<Event>| {
                 let Ok(event) = event else { return };
-                if !event.paths.iter().any(is_pywal_path) {
+                if !event.paths.iter().any(|path| is_pywal_path(path)) {
                     return;
                 }
-                let Ok(mut last_event) = last.lock() else {
-                    return;
-                };
-                if last_event.elapsed() < Duration::from_millis(650) {
-                    return;
-                }
-                *last_event = Instant::now();
+                let sequence = generation.fetch_add(1, Ordering::AcqRel) + 1;
+                let generation = generation.clone();
                 let app = callback_app.clone();
-                tauri::async_runtime::spawn_blocking(move || refresh(app));
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(800));
+                    if generation.load(Ordering::Acquire) == sequence {
+                        refresh(app);
+                    }
+                });
             },
             Config::default(),
         )
         .map_err(|error| error.to_string())?;
         watcher
-            .watch(&cache, RecursiveMode::Recursive)
+            .watch(
+                if wal_dir.is_dir() { &wal_dir } else { &cache },
+                RecursiveMode::Recursive,
+            )
             .map_err(|error| error.to_string())?;
         Ok(Self { _watcher: watcher })
     }
 }
 
-fn is_pywal_path(path: &PathBuf) -> bool {
-    path.components().any(|part| part.as_os_str() == "wal")
+fn is_pywal_path(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == "colors.json")
+        && path.components().any(|part| part.as_os_str() == "wal")
 }
 fn refresh(app: AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
