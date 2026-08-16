@@ -8,6 +8,7 @@ import type {
   CompatibilityOverview,
 } from "../types/library";
 import type { PlatformOverview, StoreId } from "../types/platform";
+import type { ThemeDetails, ThemeSummary } from "../features/themes/types";
 export interface ProductStatus {
   autostart: boolean;
   appimage: boolean;
@@ -232,4 +233,12 @@ export const backend = {
     invoke<void>("delete_argument_preset", { id }),
   getArgumentPreset: (id: string) =>
     invoke<ArgumentPreset | null>("get_argument_preset", { id }),
+  listThemes: () => invoke<ThemeSummary[]>("list_themes"),
+  getTheme: (id: string) => invoke<ThemeDetails>("get_theme", { id }),
+  getActiveTheme: () => invoke<ThemeDetails>("get_active_theme"),
+  setActiveTheme: (id: string) => invoke<ThemeDetails>("set_active_theme", { id }),
+  validateTheme: (path: string) => invoke<ThemeSummary>("validate_theme", { path }),
+  importTheme: (path: string) => invoke<ThemeSummary>("import_theme", { path }),
+  removeTheme: (id: string) => invoke<void>("remove_theme", { id }),
+  exportTheme: (id: string, path: string) => invoke<void>("export_theme", { id, path }),
 };

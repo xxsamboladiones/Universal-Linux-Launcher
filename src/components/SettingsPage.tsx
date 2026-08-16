@@ -5,6 +5,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import type { ProductStatus } from "../services/backend";
 import type { UpdateStatus } from "../services/backend";
 import type { AppSettings, CompatibilityOverview, LibraryItem } from "../types/library";
+import { ThemesPanel } from "../features/themes/components/ThemesPanel";
 
 interface Props {
   items: LibraryItem[];
@@ -20,7 +21,7 @@ export function SettingsPage({
   settings,
   onSettings,
 }: Props) {
-  const [section, setSection] = useState<"library" | "general" | "compatibility">("library");
+  const [section, setSection] = useState<"library" | "general" | "themes" | "compatibility">("library");
   const [compatibility, setCompatibility] = useState<CompatibilityOverview | null>(null);
   const [productStatus,setProductStatus]=useState<ProductStatus|null>(null);
   const [productMessage,setProductMessage]=useState<string|null>(null);
@@ -38,11 +39,11 @@ export function SettingsPage({
     <div className="settings-page">
       <div className="hero compact">
         <p>CONFIGURAÇÕES</p>
-        <h1>{section === "library" ? "Biblioteca" : section === "general" ? "Geral" : "Compatibilidade"}</h1>
+        <h1>{section === "library" ? "Biblioteca" : section === "general" ? "Geral" : section === "themes" ? "Aparência" : "Compatibilidade"}</h1>
         <span>
           {section === "library"
             ? "Gerencie o conteúdo exibido pelo Orbit."
-            : section === "general" ? "Preferências de aparência e comportamento." : "Runtimes e integração do sistema."}
+            : section === "general" ? "Preferências de comportamento." : section === "themes" ? "Personalize a aparência do Orbit." : "Runtimes e integração do sistema."}
         </span>
       </div>
       <div className="settings-layout">
@@ -61,6 +62,7 @@ export function SettingsPage({
             <Settings2 size={17} />
             Geral
           </button>
+          <button className={section === "themes" ? "active" : ""} onClick={() => setSection("themes")}><PaletteIcon/>Aparência</button>
           <button className={section === "compatibility" ? "active" : ""} onClick={() => setSection("compatibility")}><Gauge size={17}/>Compatibilidade</button>
         </nav>
         {section === "library" ? (
@@ -194,7 +196,7 @@ export function SettingsPage({
               </select>
             </label>
           </section>
-        ) : <section className="settings-panel compatibility-panel">
+        ) : section === "themes" ? <ThemesPanel /> : <section className="settings-panel compatibility-panel">
           <div className="panel-heading"><div><h2>CachyOS e Wayland</h2><p>Componentes detectados no host e runtimes disponíveis.</p></div></div>
           {!compatibility ? <p>Verificando componentes…</p> : <>
             <div className="compat-status">{([['GameMode',compatibility.gamemode],['MangoHud',compatibility.mangohud],['Gamescope',compatibility.gamescope],['DXVK',compatibility.dxvk],['VKD3D',compatibility.vkd3d],['Wayland',compatibility.wayland]] as [string,boolean][]).map(([name,ok])=><span className={ok ? 'available':'missing'} key={name}>{ok ? '✓':'—'} {name}</span>)}</div>
@@ -207,3 +209,4 @@ export function SettingsPage({
     </div>
   );
 }
+function PaletteIcon() { return <span aria-hidden="true">◐</span>; }

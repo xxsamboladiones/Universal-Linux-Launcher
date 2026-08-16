@@ -102,6 +102,7 @@ export interface ScanProgress {
 }
 export interface AppSettings {
   theme: "dark" | "system";
+  activeThemeId: string;
   scanOnStartup: boolean;
   confirmBeforeRemove: boolean;
   preferredTerminal: string | null;

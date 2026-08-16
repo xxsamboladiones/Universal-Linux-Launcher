@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "example-nebula",
+  "name": "Example Nebula",
+  "version": "1.0.0",
+  "author": "Orbit Community",
+  "description": "Exemplo mínimo de um tema declarativo.",
+  "type": "dark",
+  "orbitVersion": ">=0.1.2",
+  "preview": "preview.png",
+  "entry": "theme.json"
+}

@@ -13,6 +13,7 @@ import type { AppSettings } from "./types/library";
 import type { TransferOperation } from "./types/platform";
 import { backend } from "./services/backend";
 import { visibleInLibrary } from "./services/library-filter";
+import { useThemeBootstrap } from "./features/themes/hooks/useThemeBootstrap";
 import "./styles.css";
 import "./platform.css";
 import "./modal.css";
@@ -22,7 +23,9 @@ import "./general-settings.css";
 import "./file-picker.css";
 import "./phase2.css";
 import "./controls.css";
+import "./features/themes/theme.css";
 export default function App() {
+  useThemeBootstrap();
   const s = useLibrary();
   const { load, scan, setFilter, refreshRunning, setProgress, applyTransfer } =
     s;
@@ -31,6 +34,7 @@ export default function App() {
   const [editing, setEditing] = useState<LibraryItem | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     theme: "dark",
+    activeThemeId: "orbit-dark",
     scanOnStartup: false,
     confirmBeforeRemove: true,
     preferredTerminal: "konsole",
