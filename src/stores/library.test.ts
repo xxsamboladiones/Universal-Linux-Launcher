@@ -66,10 +66,12 @@ const epicGame: LibraryItem = {
 const operation = (
   state: TransferOperation["state"],
   error: string | null = null,
+  provider: "epic" | "gog" = "epic",
+  itemId = "game-id",
 ): TransferOperation => ({
   id: "operation-id",
-  provider: "epic",
-  itemId: "game-id",
+  provider,
+  itemId,
   action: "install",
   state,
   downloadedBytes: 0,
@@ -133,5 +135,28 @@ describe("Epic installation state", () => {
 
     expect(useLibrary.getState().installing[epicGame.id]).toBeUndefined();
     expect(useLibrary.getState().error).toBe("Falha no download");
+  });
+
+  it("queues and tracks GOG installations with the same provider flow", async () => {
+    mocks.queueStoreOperation.mockResolvedValue("gog-operation-id");
+    const gogGame = {
+      ...epicGame,
+      id: "gog:1207658997",
+      provider: "gog" as const,
+      category: "GOG",
+    };
+
+    expect(await useLibrary.getState().install(gogGame)).toBe(true);
+    expect(mocks.queueStoreOperation).toHaveBeenCalledWith(
+      "gog",
+      "1207658997",
+      "install",
+    );
+    expect(useLibrary.getState().installing[gogGame.id]).toBe(true);
+
+    useLibrary
+      .getState()
+      .applyTransfer(operation("completed", null, "gog", "1207658997"));
+    expect(useLibrary.getState().installing[gogGame.id]).toBeUndefined();
   });
 });

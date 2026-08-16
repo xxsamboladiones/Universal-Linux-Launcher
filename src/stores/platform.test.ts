@@ -125,6 +125,20 @@ describe("platform authentication", () => {
     expect(mocks.list).toHaveBeenCalledOnce();
   });
 
+  it("reports GOG catalog synchronization without an Epic label", async () => {
+    mocks.syncStoreLibrary.mockResolvedValue(42);
+    mocks.platformOverview.mockResolvedValue(connectedOverview);
+    mocks.list.mockResolvedValue([]);
+
+    await usePlatform.getState().syncLibrary("gog");
+
+    expect(mocks.syncStoreLibrary).toHaveBeenCalledWith("gog");
+    expect(usePlatform.getState().notice).toBe(
+      "42 jogos sincronizados do GOG.",
+    );
+    expect(usePlatform.getState().syncing.gog).toBeUndefined();
+  });
+
   it("clears Epic sync state and displays backend failures", async () => {
     mocks.syncStoreLibrary.mockRejectedValue(
       new Error("Legendary indisponível"),

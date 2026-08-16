@@ -88,6 +88,8 @@ export default function App() {
     () => s.items.filter((item) => visibleInLibrary(item, s.filter)),
     [s.items, s.filter],
   );
+  const storeCatalog = ["epic", "gog"].includes(s.filter);
+  const storeName = s.filter === "gog" ? "GOG" : "Epic Games";
   const items = useMemo(
     () =>
       filteredItems
@@ -97,17 +99,16 @@ export default function App() {
             .includes(s.query.toLowerCase()),
         )
         .sort((left, right) =>
-          s.filter === "epic"
+          ["epic", "gog"].includes(s.filter)
             ? Number(right.installed) - Number(left.installed) ||
               left.name.localeCompare(right.name, "pt-BR")
             : 0,
         ),
     [filteredItems, s.filter, s.query],
   );
-  const epicInstalled =
-    s.filter === "epic"
-      ? filteredItems.filter((item) => item.installed).length
-      : 0;
+  const storeInstalled = storeCatalog
+    ? filteredItems.filter((item) => item.installed).length
+    : 0;
   const restore = async (item: LibraryItem) => {
     setRestoring(item.id);
     try {
@@ -158,17 +159,21 @@ export default function App() {
         ) : (
           <>
             <div className="hero">
-              <p>{s.filter === "epic" ? "SUA CONTA EPIC" : "SUA BIBLIOTECA"}</p>
+              <p>
+                {storeCatalog
+                  ? `SUA CONTA ${s.filter.toUpperCase()}`
+                  : "SUA BIBLIOTECA"}
+              </p>
               <h1>
                 {s.filter === "home"
                   ? "Olá, pronto para jogar?"
-                  : s.filter === "epic"
-                    ? "Epic Games"
+                  : storeCatalog
+                    ? storeName
                     : "Biblioteca"}
               </h1>
               <span>
-                {s.filter === "epic"
-                  ? `${filteredItems.length} jogos na conta · ${epicInstalled} instalados`
+                {storeCatalog
+                  ? `${filteredItems.length} jogos na conta · ${storeInstalled} instalados`
                   : `${items.length} itens disponíveis no seu universo`}
               </span>
             </div>
@@ -240,8 +245,8 @@ export default function App() {
                 <Gamepad2 />
                 <h2>Sua órbita está vazia</h2>
                 <p>
-                  {s.filter === "epic"
-                    ? "Conecte sua conta e sincronize a biblioteca da Epic Games."
+                  {storeCatalog
+                    ? `Conecte sua conta e sincronize a biblioteca ${s.filter === "epic" ? "da Epic Games" : "do GOG"}.`
                     : "Atualize a biblioteca para encontrar Steam e aplicativos do sistema."}
                 </p>
               </div>

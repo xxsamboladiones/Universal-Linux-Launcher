@@ -89,7 +89,7 @@ export const usePlatform = create<PlatformState>((set, get) => ({
       useLibrary.setState({ items, error: null });
       set({
         overview,
-        notice: `${count} ${count === 1 ? "jogo sincronizado" : "jogos sincronizados"} da Epic Games.`,
+        notice: `${count} ${count === 1 ? "jogo sincronizado" : "jogos sincronizados"} ${provider === "epic" ? "da Epic Games" : "do GOG"}.`,
       });
     } catch (error) {
       set({

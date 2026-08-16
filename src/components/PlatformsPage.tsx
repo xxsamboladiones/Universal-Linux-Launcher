@@ -145,8 +145,11 @@ export function PlatformsPage() {
     if (account.state === "component_required") {
       return prepare(account.provider);
     }
-    if (account.state === "connected" && account.provider === "epic") {
-      return syncLibrary("epic");
+    if (
+      account.state === "connected" &&
+      ["epic", "gog"].includes(account.provider)
+    ) {
+      return syncLibrary(account.provider);
     }
     return connectAccount(account);
   };
@@ -195,7 +198,8 @@ export function PlatformsPage() {
                 loading ||
                 Boolean(preparing[account.provider]) ||
                 Boolean(syncing[account.provider]) ||
-                (account.state === "connected" && account.provider !== "epic")
+                (account.state === "connected" &&
+                  !["epic", "gog"].includes(account.provider))
               }
               aria-busy={Boolean(syncing[account.provider])}
               onClick={() => void handleAccountAction(account)}
@@ -207,10 +211,18 @@ export function PlatformsPage() {
                     ? progressLabel(dependencyProgress[account.provider] ?? null)
                     : "Preparar suporte"}
                 </>
-              ) : account.state === "connected" && account.provider === "epic" ? <>
-                <RefreshCw className={syncing.epic ? "spin" : ""} size={16}/>
-                {syncing.epic ? "Sincronizando…" : "Sincronizar biblioteca"}
-              </> : (
+              ) : account.state === "connected" &&
+                ["epic", "gog"].includes(account.provider) ? (
+                <>
+                  <RefreshCw
+                    className={syncing[account.provider] ? "spin" : ""}
+                    size={16}
+                  />
+                  {syncing[account.provider]
+                    ? "Sincronizando…"
+                    : "Sincronizar biblioteca"}
+                </>
+              ) : (
                 <>
                   <ExternalLink size={16} />
                   Conectar
