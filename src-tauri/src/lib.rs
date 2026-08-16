@@ -123,6 +123,7 @@ pub fn run() {
             commands::open_compatibility_log,
             commands::rollback_dependency,
             commands::connect_provider,
+            commands::open_provider_login,
             commands::store_provider_token,
             commands::queue_store_operation,
             commands::retry_operation,

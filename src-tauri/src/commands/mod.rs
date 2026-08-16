@@ -13,6 +13,8 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State, Window};
 
 #[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::AtomicI32;
@@ -951,6 +953,32 @@ pub async fn connect_provider(
         .then(|| args.get(1).cloned())
         .flatten();
     let steam_log_offset = steam_user.as_ref().map(|_| manager.steam_log_len());
+    if provider == "gog" {
+        let auth_path = manager.gog_auth_path();
+        if let Some(parent) = auth_path.parent() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(target_os = "linux")]
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+        tauri::async_runtime::spawn_blocking(move || run_gog_auth_command(command, args))
+            .await
+            .map_err(|error| LauncherError::LaunchFailed(error.to_string()))??;
+        let manager = platform::ProviderManager::new(data_dir);
+        if !manager.gog_authenticated() {
+            return Err(LauncherError::ProviderUnavailable(
+                "O GOGDL terminou sem salvar uma sessão válida. Repita o login e cole a URL final completa"
+                    .into(),
+            ));
+        }
+        state
+            .database
+            .lock()
+            .expect("database lock poisoned")
+            .upsert_provider_account("gog", "connected", None)?;
+        let _ = app.emit("provider-state-changed", &provider);
+        return Ok(());
+    }
+
     let settings = state
         .database
         .lock()
@@ -999,6 +1027,98 @@ pub async fn connect_provider(
             .upsert_provider_account("steam", "connected", Some(&verified_user))?;
     }
     let _ = app.emit("provider-state-changed", &provider);
+    Ok(())
+}
+
+const GOG_AUTH_OUTPUT_LIMIT: u64 = 64 * 1024;
+const GOG_AUTH_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn run_gog_auth_command(command: String, args: Vec<String>) -> Result<()> {
+    let mut stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
+    let mut process = std::process::Command::new(command);
+    process
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
+    clean_appimage_environment(&mut process);
+    #[cfg(target_os = "linux")]
+    process.process_group(0);
+    let mut child = process
+        .spawn()
+        .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?;
+    let deadline = Instant::now() + GOG_AUTH_TIMEOUT;
+    let status = loop {
+        if stdout.metadata()?.len() > GOG_AUTH_OUTPUT_LIMIT
+            || stderr.metadata()?.len() > GOG_AUTH_OUTPUT_LIMIT
+        {
+            terminate_store_process(&mut child);
+            let _ = child.wait();
+            return Err(LauncherError::ProviderUnavailable(
+                "A resposta de autenticação do GOG excedeu o limite de segurança".into(),
+            ));
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            terminate_store_process(&mut child);
+            let _ = child.wait();
+            return Err(LauncherError::ProviderUnavailable(
+                "A autenticação do GOG excedeu 2 minutos. Verifique sua conexão e tente novamente"
+                    .into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    if !status.success() {
+        return Err(LauncherError::ProviderUnavailable(
+            "O GOG recusou o código de autorização. Inicie um novo login e tente novamente".into(),
+        ));
+    }
+    stdout.seek(SeekFrom::Start(0))?;
+    let mut response = Vec::new();
+    stdout
+        .take(GOG_AUTH_OUTPUT_LIMIT + 1)
+        .read_to_end(&mut response)?;
+    if response.len() > GOG_AUTH_OUTPUT_LIMIT as usize {
+        return Err(LauncherError::ProviderUnavailable(
+            "A resposta de autenticação do GOG excedeu o limite de segurança".into(),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&response).map_err(|_| {
+        LauncherError::ProviderUnavailable(
+            "O GOGDL retornou uma resposta de autenticação inválida".into(),
+        )
+    })?;
+    if value
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(LauncherError::ProviderUnavailable(
+            "O GOGDL não retornou uma sessão autenticada".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_provider_login(provider: String) -> Result<()> {
+    if provider != "gog" {
+        return Err(LauncherError::ProviderUnavailable(provider));
+    }
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(platform::GOG_LOGIN_URL)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    clean_appimage_environment(&mut command);
+    command
+        .spawn()
+        .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?;
     Ok(())
 }
 
@@ -1153,16 +1273,22 @@ fn run_store_operation(
                 )
             })
         }),
-        "gog" => manager.executable("gogdl").map(|exe| {
-            (
-                exe,
-                vec![
-                    "download".into(),
-                    operation.item_id.clone(),
-                    "--path".into(),
-                    data.join("games/gog").to_string_lossy().into_owned(),
-                ],
-            )
+        "gog" => manager.executable("gogdl").and_then(|exe| {
+            platform::ProviderManager::new(data.clone())
+                .gog_effective_auth_path()
+                .map(|auth_path| {
+                    (
+                        exe,
+                        vec![
+                            "--auth-config-path".into(),
+                            auth_path.to_string_lossy().into_owned(),
+                            "download".into(),
+                            operation.item_id.clone(),
+                            "--path".into(),
+                            data.join("games/gog").to_string_lossy().into_owned(),
+                        ],
+                    )
+                })
         }),
         "battlenet" => Some((
             manager
@@ -1177,6 +1303,8 @@ fn run_store_operation(
     };
     let missing_command = if operation.provider == "steam" && steam_user.is_none() {
         "Conta Steam não conectada; conecte novamente antes de instalar".to_string()
+    } else if operation.provider == "gog" {
+        "Conta GOG não conectada; conecte novamente antes de instalar".to_string()
     } else {
         "Componente do provider não instalado".to_string()
     };
@@ -2095,8 +2223,9 @@ mod tests {
     use super::{
         collect_process_chunks, epic_store_arguments, load_library_with_icons,
         merge_legendary_installations, parse_legendary_installed, parse_legendary_library,
-        provider_operation_error, run_legendary_json_command, steam_store_arguments,
-        steam_uninstall_arguments, terminate_store_process, LibrarySyncManager, TransferManager,
+        provider_operation_error, run_gog_auth_command, run_legendary_json_command,
+        steam_store_arguments, steam_uninstall_arguments, terminate_store_process,
+        LibrarySyncManager, TransferManager,
     };
     use crate::{
         core::model::{ItemKind, LibraryItem, ProviderKind},
@@ -2201,6 +2330,21 @@ mod tests {
             ]
         );
         assert!(!arguments.iter().any(|argument| argument == "anonymous"));
+    }
+
+    #[test]
+    fn gog_auth_runner_rejects_null_and_accepts_a_token_response() {
+        assert!(
+            run_gog_auth_command("sh".into(), vec!["-c".into(), "printf null".into()]).is_err()
+        );
+        assert!(run_gog_auth_command(
+            "sh".into(),
+            vec![
+                "-c".into(),
+                "printf '{\"access_token\":\"test-token\"}'".into()
+            ]
+        )
+        .is_ok());
     }
 
     #[test]

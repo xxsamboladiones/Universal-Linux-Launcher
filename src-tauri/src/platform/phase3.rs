@@ -556,6 +556,8 @@ impl CredentialVault {
 pub struct ProviderManager {
     root: PathBuf,
 }
+pub const GOG_LOGIN_URL: &str = "https://auth.gog.com/auth?client_id=46899977096215655&redirect_uri=https%3A%2F%2Fembed.gog.com%2Fon_login_success%3Forigin%3Dclient&response_type=code&layout=galaxy";
+
 impl ProviderManager {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
@@ -588,13 +590,26 @@ impl ProviderManager {
                     vec!["+login".into(), user, "+info".into(), "+quit".into()],
                 ))
             }
-            "gog" => Ok((
-                deps.executable("gogdl")
-                    .ok_or_else(|| LauncherError::ExecutableNotFound("gogdl".into()))?
-                    .to_string_lossy()
-                    .into_owned(),
-                vec!["auth".into()],
-            )),
+            "gog" => {
+                let code = valid_gog_authorization_code(user.ok_or_else(|| {
+                    LauncherError::InvalidArguments(
+                        "Conclua o login no navegador e cole a URL final do GOG".into(),
+                    )
+                })?)?;
+                Ok((
+                    deps.executable("gogdl")
+                        .ok_or_else(|| LauncherError::ExecutableNotFound("gogdl".into()))?
+                        .to_string_lossy()
+                        .into_owned(),
+                    vec![
+                        "--auth-config-path".into(),
+                        self.gog_auth_path().to_string_lossy().into_owned(),
+                        "auth".into(),
+                        "--code".into(),
+                        code,
+                    ],
+                ))
+            }
             "battlenet" => Ok((
                 "wine".into(),
                 vec![self
@@ -605,6 +620,23 @@ impl ProviderManager {
             )),
             _ => Err(LauncherError::ProviderUnavailable(provider.into())),
         }
+    }
+
+    pub fn gog_auth_path(&self) -> PathBuf {
+        self.root.join("providers/gog/auth.json")
+    }
+
+    pub fn gog_effective_auth_path(&self) -> Option<PathBuf> {
+        let own = self.gog_auth_path();
+        if valid_gog_auth_file(&own) {
+            return Some(own);
+        }
+        let heroic = dirs::home_dir()?.join(".config/heroic/gog_store/auth.json");
+        valid_gog_auth_file(&heroic).then_some(heroic)
+    }
+
+    pub fn gog_authenticated(&self) -> bool {
+        self.gog_effective_auth_path().is_some()
     }
 
     /// Console transcript maintained by the managed SteamCMD runtime.
@@ -690,6 +722,67 @@ impl ProviderManager {
             updated_at: now,
         }
     }
+}
+
+fn valid_gog_authorization_code(input: &str) -> Result<String> {
+    let input = input.trim();
+    let code = if input.starts_with("https://") {
+        let url = tauri::Url::parse(input).map_err(|_| {
+            LauncherError::InvalidArguments("A URL de retorno do GOG é inválida".into())
+        })?;
+        if url.scheme() != "https"
+            || url.host_str() != Some("embed.gog.com")
+            || url.path() != "/on_login_success"
+        {
+            return Err(LauncherError::InvalidArguments(
+                "Cole somente a URL final iniciada por https://embed.gog.com/on_login_success"
+                    .into(),
+            ));
+        }
+        url.query_pairs()
+            .find(|(name, _)| name == "code")
+            .map(|(_, value)| value.into_owned())
+            .ok_or_else(|| {
+                LauncherError::InvalidArguments(
+                    "A URL de retorno do GOG não contém o código de autorização".into(),
+                )
+            })?
+    } else {
+        input.to_owned()
+    };
+    if !(8..=2048).contains(&code.len())
+        || !code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
+    {
+        return Err(LauncherError::InvalidArguments(
+            "O código de autorização do GOG é inválido".into(),
+        ));
+    }
+    Ok(code)
+}
+
+fn valid_gog_auth_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 64 * 1024 {
+        return false;
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    ["access_token", "refresh_token", "user_id"]
+        .into_iter()
+        .all(|field| {
+            value
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty() && value.len() <= 8192)
+        })
 }
 
 fn valid_named_steam_account(user: &str) -> Result<String> {
@@ -920,6 +1013,13 @@ mod tests {
         ProviderManager::new(root.to_path_buf())
     }
 
+    fn provider_with_gogdl(root: &Path) -> ProviderManager {
+        let executable = root.join("providers/gogdl/current/bin/gogdl");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"#!/bin/sh\n").unwrap();
+        ProviderManager::new(root.to_path_buf())
+    }
+
     #[test]
     fn refuses_unsigned_external_override() {
         let root = tempfile::tempdir().unwrap();
@@ -1076,6 +1176,47 @@ mod tests {
             .authenticate_command("steam", Some("orbit_user"))
             .unwrap();
         assert_eq!(arguments, ["+login", "orbit_user", "+info", "+quit"]);
+    }
+
+    #[test]
+    fn gog_authentication_requires_a_trusted_callback_code() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = provider_with_gogdl(root.path());
+        for invalid in [
+            None,
+            Some("short"),
+            Some("https://evil.example/on_login_success?code=trusted-code"),
+            Some("https://embed.gog.com/on_login_success?error=cancelled"),
+        ] {
+            assert!(provider.authenticate_command("gog", invalid).is_err());
+        }
+
+        let (_, arguments) = provider
+            .authenticate_command(
+                "gog",
+                Some("https://embed.gog.com/on_login_success?origin=client&code=trusted-code_123"),
+            )
+            .unwrap();
+        assert_eq!(arguments[0], "--auth-config-path");
+        assert!(arguments[1].ends_with("providers/gog/auth.json"));
+        assert_eq!(arguments[2..], ["auth", "--code", "trusted-code_123"]);
+    }
+
+    #[test]
+    fn gog_connection_requires_a_valid_bounded_credentials_file() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = ProviderManager::new(root.path().to_path_buf());
+        let path = provider.gog_auth_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"null").unwrap();
+        assert!(!provider.gog_authenticated());
+
+        fs::write(
+            &path,
+            br#"{"access_token":"access","refresh_token":"refresh","user_id":"user"}"#,
+        )
+        .unwrap();
+        assert!(provider.gog_authenticated());
     }
 
     #[test]

@@ -113,7 +113,21 @@ export function PlatformsPage() {
     return () => { void unlisten.then((stop) => stop()); };
   }, []);
 
-  const connectAccount = (account: StoreAccount) => {
+  const connectAccount = async (account: StoreAccount) => {
+    if (account.provider === "gog") {
+      try {
+        await backend.openProviderLogin("gog");
+      } catch (error) {
+        window.alert(`Não foi possível abrir o login do GOG: ${String(error)}`);
+        return;
+      }
+      const response = window.prompt(
+        "Conclua o login no navegador. Na página final, copie a URL completa da barra de endereços e cole aqui.\n\nEla deve começar com https://embed.gog.com/on_login_success?",
+      );
+      const authorization = response?.trim();
+      if (!authorization) return;
+      return connect("gog", authorization);
+    }
     if (account.provider !== "steam") {
       return connect(account.provider);
     }

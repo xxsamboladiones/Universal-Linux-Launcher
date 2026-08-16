@@ -199,6 +199,8 @@ export const backend = {
     invoke<void>("prepare_provider", { provider }),
   connectProvider: (provider: StoreId, user?: string) =>
     invoke<void>("connect_provider", { provider, user }),
+  openProviderLogin: (provider: StoreId) =>
+    invoke<void>("open_provider_login", { provider }),
   queueStoreOperation: (
     provider: StoreId,
     itemId: string,

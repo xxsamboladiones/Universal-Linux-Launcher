@@ -2,7 +2,7 @@ mod phase3;
 
 use crate::database::Database;
 pub(crate) use phase3::parse_transfer_progress;
-pub use phase3::{CredentialVault, DependencyManager, ProviderManager};
+pub use phase3::{CredentialVault, DependencyManager, ProviderManager, GOG_LOGIN_URL};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -178,6 +178,9 @@ fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     if provider == "steam" {
         return connected_provider_user(root, db, provider).is_some();
     }
+    if provider == "gog" {
+        return ProviderManager::new(root.to_path_buf()).gog_authenticated();
+    }
     if db
         .provider_account(provider)
         .ok()
@@ -188,7 +191,7 @@ fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     }
     match provider {
         "epic" => home.join(".config/legendary/user.json").is_file(),
-        "gog" => home.join(".config/heroic/gog_store/auth.json").is_file(),
+        "gog" => false,
         "battlenet" => root.join("prefixes/battlenet").is_dir(),
         _ => false,
     }
