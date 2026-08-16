@@ -9,6 +9,7 @@ import type {
 } from "../types/library";
 import type { PlatformOverview, StoreId } from "../types/platform";
 import type { ThemeDetails, ThemeSummary } from "../features/themes/types";
+import type { AutomaticTheme, ProviderStatus } from "../features/themes/types";
 export interface ProductStatus {
   autostart: boolean;
   appimage: boolean;
@@ -241,4 +242,9 @@ export const backend = {
   importTheme: (path: string) => invoke<ThemeSummary>("import_theme", { path }),
   removeTheme: (id: string) => invoke<void>("remove_theme", { id }),
   exportTheme: (id: string, path: string) => invoke<void>("export_theme", { id, path }),
+  colorSchemeProvider: () => invoke<ProviderStatus>("detect_color_scheme_provider"),
+  pywalStatus: () => invoke<ProviderStatus>("get_pywal_status"),
+  currentWallpaper: () => invoke<string>("get_current_wallpaper"),
+  automaticTheme: () => invoke<AutomaticTheme>("get_automatic_theme"),
+  refreshAutomaticTheme: () => invoke<AutomaticTheme>("refresh_automatic_theme"),
 };

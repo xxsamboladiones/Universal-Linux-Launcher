@@ -35,6 +35,12 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>({
     theme: "dark",
     activeThemeId: "orbit-dark",
+    themeMode: "manual",
+    paletteSource: "automatic",
+    wallpaperInfluence: 70,
+    automaticColorMode: "automatic",
+    automaticUpdate: false,
+    manualWallpaperPath: null,
     scanOnStartup: false,
     confirmBeforeRemove: true,
     preferredTerminal: "konsole",

@@ -137,7 +137,13 @@ pub fn run() {
             commands::import_theme,
             commands::remove_theme,
             commands::export_theme,
-            commands::validate_theme
+            commands::validate_theme,
+            commands::detect_color_scheme_provider,
+            commands::get_current_wallpaper,
+            commands::generate_automatic_palette,
+            commands::get_automatic_theme,
+            commands::refresh_automatic_theme,
+            commands::get_pywal_status
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orbit Launcher");

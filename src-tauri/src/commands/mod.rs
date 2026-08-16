@@ -848,6 +848,61 @@ pub async fn export_theme(id: String, path: String) -> Result<()> {
 }
 
 #[tauri::command]
+pub async fn detect_color_scheme_provider() -> Result<crate::themes::automatic::ProviderStatus> {
+    tauri::async_runtime::spawn_blocking(crate::themes::automatic::detect_provider)
+        .await
+        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))
+}
+
+#[tauri::command]
+pub async fn get_pywal_status() -> Result<crate::themes::automatic::ProviderStatus> {
+    detect_color_scheme_provider().await
+}
+
+#[tauri::command]
+pub async fn get_current_wallpaper() -> Result<String> {
+    tauri::async_runtime::spawn_blocking(crate::themes::automatic::current_wallpaper)
+        .await
+        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
+}
+
+#[tauri::command]
+pub async fn generate_automatic_palette(
+    state: State<'_, AppState>,
+) -> Result<crate::themes::automatic::AutomaticTheme> {
+    let settings = state
+        .database
+        .lock()
+        .expect("database lock poisoned")
+        .settings()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::themes::automatic::generate(
+            settings.wallpaper_influence,
+            &settings.automatic_color_mode,
+            &settings.palette_source,
+            settings.manual_wallpaper_path,
+        )
+    })
+    .await
+    .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
+}
+
+#[tauri::command]
+pub async fn get_automatic_theme(
+    state: State<'_, AppState>,
+) -> Result<crate::themes::automatic::AutomaticTheme> {
+    generate_automatic_palette(state).await
+}
+
+#[tauri::command]
+pub async fn refresh_automatic_theme(
+    state: State<'_, AppState>,
+) -> Result<crate::themes::automatic::AutomaticTheme> {
+    let automatic = generate_automatic_palette(state).await?;
+    Ok(automatic)
+}
+
+#[tauri::command]
 pub fn list_argument_presets(
     state: State<AppState>,
 ) -> Result<Vec<crate::core::model::ArgumentPreset>> {

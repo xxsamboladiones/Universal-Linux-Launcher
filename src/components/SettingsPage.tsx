@@ -196,7 +196,7 @@ export function SettingsPage({
               </select>
             </label>
           </section>
-        ) : section === "themes" ? <ThemesPanel /> : <section className="settings-panel compatibility-panel">
+        ) : section === "themes" ? <ThemesPanel settings={settings} onSettings={onSettings} /> : <section className="settings-panel compatibility-panel">
           <div className="panel-heading"><div><h2>CachyOS e Wayland</h2><p>Componentes detectados no host e runtimes disponíveis.</p></div></div>
           {!compatibility ? <p>Verificando componentes…</p> : <>
             <div className="compat-status">{([['GameMode',compatibility.gamemode],['MangoHud',compatibility.mangohud],['Gamescope',compatibility.gamescope],['DXVK',compatibility.dxvk],['VKD3D',compatibility.vkd3d],['Wayland',compatibility.wayland]] as [string,boolean][]).map(([name,ok])=><span className={ok ? 'available':'missing'} key={name}>{ok ? '✓':'—'} {name}</span>)}</div>

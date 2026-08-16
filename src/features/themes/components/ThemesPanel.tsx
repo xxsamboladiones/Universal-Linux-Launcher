@@ -1,9 +1,12 @@
 import { Download, LoaderCircle, Palette, Trash2, Upload } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useThemeStore } from "../stores/theme";
+import type { AppSettings } from "../../../types/library";
 
-export function ThemesPanel() {
-  const { themes, active, status, error, loaded, apply, importFile, remove, exportFile } = useThemeStore();
+interface Props { settings: AppSettings; onSettings(settings: AppSettings): Promise<void>; }
+
+export function ThemesPanel({ settings, onSettings }: Props) {
+  const { themes, active, automatic, pywal, status, error, loaded, apply, refreshAutomatic, importFile, remove, exportFile } = useThemeStore();
   const busy = status !== "idle";
   const importTheme = async () => {
     const path = await open({ title: "Importar tema do Orbit", multiple: false, directory: false, filters: [{ name: "Tema Orbit", extensions: ["orbit-theme"] }] });
@@ -19,6 +22,11 @@ export function ThemesPanel() {
       <button className="theme-import" disabled={busy} onClick={() => void importTheme()}><Upload size={15}/> {status === "importing" ? "Importando…" : "Importar tema"}</button>
     </div>
     {error && <p className="theme-error" role="alert">{error}</p>}
+    <section className="automatic-theme" aria-busy={status === "generating"}>
+      <div><strong>Tema automático</strong><small>Pywal é opcional; o Orbit usa seu gerador nativo quando necessário.</small></div>
+      <label>Modo <select value={settings.themeMode} onChange={(e) => void onSettings({ ...settings, themeMode: e.target.value as AppSettings["themeMode"] })}><option value="manual">Manual</option><option value="automatic">Automático</option><option value="system">Sistema</option></select></label>
+      {settings.themeMode === "automatic" && <><label>Fonte <select value={settings.paletteSource} onChange={(e) => void onSettings({ ...settings, paletteSource: e.target.value as AppSettings["paletteSource"] })}><option value="automatic">Automática</option><option value="pywal" disabled={!pywal?.available}>Pywal{pywal?.available ? ` (${pywal.provider})` : " (indisponível)"}</option><option value="native">Orbit Native</option></select></label><label>Modo de cor <select value={settings.automaticColorMode} onChange={(e) => void onSettings({ ...settings, automaticColorMode: e.target.value as AppSettings["automaticColorMode"] })}><option value="automatic">Automático</option><option value="dark">Escuro</option><option value="light">Claro</option></select></label><label>Influência <input type="range" min="0" max="100" value={settings.wallpaperInfluence} onChange={(e) => void onSettings({ ...settings, wallpaperInfluence: Number(e.target.value) })}/>{settings.wallpaperInfluence}%</label><label><span>Atualizar ao mudar wallpaper</span><input type="checkbox" checked={settings.automaticUpdate} onChange={(e) => void onSettings({ ...settings, automaticUpdate: e.target.checked })}/></label><button className="theme-import" disabled={busy} onClick={() => void refreshAutomatic()}>{status === "generating" ? "Gerando…" : "Gerar e visualizar"}</button>{automatic && <small>Fonte: {automatic.source} · {automatic.wallpaperPath.split("/").pop()}</small>}</>}
+    </section>
     {!loaded ? <p className="theme-loading"><LoaderCircle size={16}/> Carregando temas…</p> : <div className="theme-grid">
       {themes.map((theme) => {
         const selected = active?.id === theme.id;

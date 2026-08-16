@@ -29,6 +29,7 @@ ico = "0.5"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 semver = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", features = ["v3_24"] }

@@ -2,6 +2,8 @@
 
 Um tema é um pacote declarativo `.orbit-theme` (ZIP). Ele não pode incluir CSS, JavaScript, HTML, binários ou scripts; o Orbit aceita somente metadados, tokens, imagens e fontes permitidas.
 
+Veja também [Temas automáticos](AUTOMATIC-THEMES.md): Pywal é opcional e o Orbit possui um gerador nativo de paletas.
+
 ## Estrutura
 
 ```text

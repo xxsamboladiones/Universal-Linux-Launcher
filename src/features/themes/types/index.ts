@@ -9,3 +9,5 @@ export interface ThemeTokens {
 }
 export interface ThemeSummary { id: string; name: string; version: string; author: string; description: string; type: ThemeType; orbitVersion: string; previewUrl: string | null; source: ThemeSource; compatible: boolean; }
 export interface ThemeDetails extends ThemeSummary { tokens: ThemeTokens; }
+export interface ProviderStatus { provider: string; available: boolean; version: string | null; }
+export interface AutomaticTheme { palette: Record<string, string | boolean>; tokens: ThemeTokens; source: string; wallpaperPath: string; paletteHash: string; }
