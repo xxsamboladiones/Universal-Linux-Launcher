@@ -82,13 +82,6 @@ pub fn overview(root: &Path, db: &Database) -> PlatformOverview {
     let specs = [
         ("steamcmd", "SteamCMD", "steam", 192_000_000),
         ("legendary", "Legendary", "epic", 55_000_000),
-        ("wine-ge", "Wine-GE", "compatibility", 680_000_000),
-        (
-            "battlenet-client",
-            "Battle.net Client",
-            "battlenet",
-            500_000_000,
-        ),
         ("gogdl", "GOGDL", "gog", 30_000_000),
     ];
     let dependencies = specs
@@ -132,13 +125,6 @@ pub fn overview(root: &Path, db: &Database) -> PlatformOverview {
             "replacement",
             vec!["gogdl"],
         ),
-        (
-            "battlenet",
-            "Battle.net",
-            "Cliente oficial isolado em prefixo Wine gerenciado.",
-            "managed_client",
-            vec!["wine-ge", "battlenet-client"],
-        ),
     ]
     .into_iter()
     .map(|(id, name, description, strategy, deps)| {
@@ -181,9 +167,6 @@ fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     if provider == "gog" {
         return ProviderManager::new(root.to_path_buf()).gog_authenticated();
     }
-    if provider == "battlenet" {
-        return ProviderManager::new(root.to_path_buf()).battlenet_installed();
-    }
     if db
         .provider_account(provider)
         .ok()
@@ -195,7 +178,6 @@ fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     match provider {
         "epic" => home.join(".config/legendary/user.json").is_file(),
         "gog" => false,
-        "battlenet" => false,
         _ => false,
     }
 }

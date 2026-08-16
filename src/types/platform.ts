@@ -1,4 +1,4 @@
-export type StoreId = "steam" | "epic" | "gog" | "battlenet";
+export type StoreId = "steam" | "epic" | "gog";
 export type ConnectionState =
   "disconnected" | "component_required" | "connected" | "error";
 export type DependencyState = "missing" | "installed" | "update_available";

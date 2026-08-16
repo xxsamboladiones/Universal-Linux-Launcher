@@ -3,7 +3,7 @@ use crate::error::{LauncherError, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{Read, Write},
+    io::Write,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -91,19 +91,12 @@ impl DependencyManager {
     }
     pub fn executable(&self, id: &str) -> Option<PathBuf> {
         let bin = self.root.join("providers").join(id).join("current/bin");
-        let candidates: &[&str] = match id {
-            "wine-ge" => &["wine", "wine64"],
-            "battlenet-client" => &["Battle.net-Setup.exe"],
-            _ => &[id],
-        };
+        let candidates: &[&str] = &[id];
         candidates
             .iter()
             .map(|name| bin.join(name))
             .find(|path| path.is_file())
-            .or_else(|| match id {
-                "wine-ge" => find_on_path("wine").or_else(|| find_on_path("wine64")),
-                _ => find_on_path(id),
-            })
+            .or_else(|| find_on_path(id))
     }
     pub fn installed_version(&self, id: &str) -> Option<String> {
         let provider = self.root.join("providers").join(id).join("current");
@@ -398,20 +391,6 @@ fn builtin_manifest(id: &str) -> Result<SignedManifest> {
             archive: None,
             size: Some(1_563_756),
         },
-        "wine-ge" => {
-            return Err(LauncherError::ProviderUnavailable(
-                "Wine não foi encontrado. No CachyOS, instale o pacote wine ou wine-staging e tente novamente".into(),
-            ))
-        }
-        "battlenet-client" => SignedManifest {
-            id: id.into(),
-            version: "1.0.66".into(),
-            url: "https://downloader.battle.net/download/installer/win/1.0.66/Battle.net-Setup.exe".into(),
-            sha256: "de5d32d4ea5eed5a9e120027fb68b370976dbfecc8f2a8f91305977f0b87fcaf".into(),
-            executable: "bin/Battle.net-Setup.exe".into(),
-            archive: None,
-            size: Some(4_896_464),
-        },
         _ => {
             return Err(LauncherError::ProviderUnavailable(format!(
                 "Componente desconhecido: {id}"
@@ -615,19 +594,6 @@ impl ProviderManager {
                     ],
                 ))
             }
-            "battlenet" => Ok((
-                deps.executable("wine-ge")
-                    .ok_or_else(|| LauncherError::ExecutableNotFound("wine".into()))?
-                    .to_string_lossy()
-                    .into_owned(),
-                vec![deps
-                    .executable("battlenet-client")
-                    .ok_or_else(|| {
-                        LauncherError::ExecutableNotFound("Battle.net-Setup.exe".into())
-                    })?
-                    .to_string_lossy()
-                    .into_owned()],
-            )),
             _ => Err(LauncherError::ProviderUnavailable(provider.into())),
         }
     }
@@ -647,24 +613,6 @@ impl ProviderManager {
 
     pub fn gog_authenticated(&self) -> bool {
         self.gog_effective_auth_path().is_some()
-    }
-
-    pub fn battlenet_prefix_path(&self) -> PathBuf {
-        self.root.join("prefixes/battlenet")
-    }
-
-    pub fn battlenet_launcher_path(&self) -> Option<PathBuf> {
-        let root = self
-            .battlenet_prefix_path()
-            .join("drive_c/Program Files (x86)/Battle.net");
-        ["Battle.net Launcher.exe", "Battle.net.exe"]
-            .into_iter()
-            .map(|name| root.join(name))
-            .find(|path| valid_windows_executable(path))
-    }
-
-    pub fn battlenet_installed(&self) -> bool {
-        self.battlenet_launcher_path().is_some()
     }
 
     /// Console transcript maintained by the managed SteamCMD runtime.
@@ -821,24 +769,6 @@ fn valid_gog_auth_value(value: &serde_json::Value) -> bool {
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|value| !value.is_empty() && value.len() <= 8192)
         })
-}
-
-fn valid_windows_executable(path: &Path) -> bool {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return false;
-    };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() < 64 * 1024
-        || metadata.len() > 512 * 1024 * 1024
-    {
-        return false;
-    }
-    let Ok(mut file) = fs::File::open(path) else {
-        return false;
-    };
-    let mut signature = [0_u8; 2];
-    file.read_exact(&mut signature).is_ok() && signature == *b"MZ"
 }
 
 fn valid_named_steam_account(user: &str) -> Result<String> {
@@ -1076,22 +1006,6 @@ mod tests {
         ProviderManager::new(root.to_path_buf())
     }
 
-    fn provider_with_battlenet_dependencies(root: &Path) -> ProviderManager {
-        for (dependency, executable, contents) in [
-            ("wine-ge", "wine", b"#!/bin/sh\n".as_slice()),
-            ("battlenet-client", "Battle.net-Setup.exe", b"MZ".as_slice()),
-        ] {
-            let path = root
-                .join("providers")
-                .join(dependency)
-                .join("current/bin")
-                .join(executable);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, contents).unwrap();
-        }
-        ProviderManager::new(root.to_path_buf())
-    }
-
     #[test]
     fn refuses_unsigned_external_override() {
         let root = tempfile::tempdir().unwrap();
@@ -1105,7 +1019,7 @@ mod tests {
 
     #[test]
     fn has_builtin_recipes_for_managed_store_tools() {
-        for id in ["steamcmd", "legendary", "gogdl", "battlenet-client"] {
+        for id in ["steamcmd", "legendary", "gogdl"] {
             let manifest = builtin_manifest(id).unwrap();
             assert_eq!(manifest.id, id);
             assert_eq!(manifest.sha256.len(), 64);
@@ -1303,40 +1217,6 @@ mod tests {
         )
         .unwrap();
         assert!(!provider.gog_authenticated());
-    }
-
-    #[test]
-    fn battlenet_authentication_uses_managed_dependencies() {
-        let root = tempfile::tempdir().unwrap();
-        let provider = provider_with_battlenet_dependencies(root.path());
-
-        let (command, arguments) = provider.authenticate_command("battlenet", None).unwrap();
-
-        assert!(command.ends_with("providers/wine-ge/current/bin/wine"));
-        assert_eq!(arguments.len(), 1);
-        assert!(
-            arguments[0].ends_with("providers/battlenet-client/current/bin/Battle.net-Setup.exe")
-        );
-    }
-
-    #[test]
-    fn battlenet_connection_requires_a_real_launcher() {
-        let root = tempfile::tempdir().unwrap();
-        let provider = ProviderManager::new(root.path().to_path_buf());
-        let launcher = provider
-            .battlenet_prefix_path()
-            .join("drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe");
-        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
-        fs::write(&launcher, b"not a PE executable").unwrap();
-        assert!(!provider.battlenet_installed());
-
-        let mut executable = vec![0_u8; 64 * 1024];
-        executable[..2].copy_from_slice(b"MZ");
-        fs::write(&launcher, executable).unwrap();
-        assert_eq!(
-            provider.battlenet_launcher_path().as_deref(),
-            Some(launcher.as_path())
-        );
     }
 
     #[test]
