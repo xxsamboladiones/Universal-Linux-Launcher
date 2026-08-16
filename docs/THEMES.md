@@ -17,7 +17,9 @@ meu-tema.orbit-theme
 
 `manifest.json` usa `schemaVersion: 1` e deve conter `id`, `name`, `version` (SemVer), `author`, `description`, `type` (`dark` ou `light`), `orbitVersion`, `entry` (`theme.json`) e, opcionalmente, `preview`.
 
-`theme.json` contém somente os grupos `colors`, `radius`, `spacing`, `typography` e `effects`. Eles são convertidos para variáveis como `--orbit-color-background`, `--orbit-color-primary`, `--orbit-radius-medium` e `--orbit-font-family`. Cores aceitam hexadecimal; medidas aceitam `px`, `rem`, `em` e `%`.
+`theme.json` contém somente os grupos `colors`, `radius`, `spacing`, `typography` e `effects`. Eles são convertidos para variáveis como `--orbit-color-background`, `--orbit-color-primary`, `--orbit-color-accent`, `--orbit-color-on-primary`, `--orbit-radius-medium` e `--orbit-font-family`. Cores aceitam hexadecimal; medidas aceitam `px`, `rem`, `em` e `%`.
+
+Os campos opcionais `accent`, `primaryForeground`, `secondaryForeground` e `accentForeground` foram adicionados de forma retrocompatível. Temas `schemaVersion: 1` existentes continuam válidos: quando esses campos não existem, o Orbit usa `primary` ou `text` como fallback. O gerador automático sempre produz as cores de foreground normalizadas para contraste.
 
 ## Instalação e exportação
 
