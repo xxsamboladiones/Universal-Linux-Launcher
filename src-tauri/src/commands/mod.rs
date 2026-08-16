@@ -752,7 +752,9 @@ pub fn update_settings(settings: AppSettings, state: State<AppState>) -> Result<
 }
 
 #[tauri::command]
-pub fn list_argument_presets(state: State<AppState>) -> Result<Vec<crate::core::model::ArgumentPreset>> {
+pub fn list_argument_presets(
+    state: State<AppState>,
+) -> Result<Vec<crate::core::model::ArgumentPreset>> {
     state
         .database
         .lock()
@@ -761,7 +763,10 @@ pub fn list_argument_presets(state: State<AppState>) -> Result<Vec<crate::core::
 }
 
 #[tauri::command]
-pub fn save_argument_preset(preset: crate::core::model::ArgumentPreset, state: State<AppState>) -> Result<()> {
+pub fn save_argument_preset(
+    preset: crate::core::model::ArgumentPreset,
+    state: State<AppState>,
+) -> Result<()> {
     state
         .database
         .lock()
@@ -779,7 +784,10 @@ pub fn delete_argument_preset(id: String, state: State<AppState>) -> Result<()> 
 }
 
 #[tauri::command]
-pub fn get_argument_preset(id: String, state: State<AppState>) -> Result<Option<crate::core::model::ArgumentPreset>> {
+pub fn get_argument_preset(
+    id: String,
+    state: State<AppState>,
+) -> Result<Option<crate::core::model::ArgumentPreset>> {
     state
         .database
         .lock()

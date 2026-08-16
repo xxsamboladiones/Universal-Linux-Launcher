@@ -317,7 +317,8 @@ impl Database {
     }
 
     pub fn delete_argument_preset(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM argument_presets WHERE id=?1", [id])?;
+        self.conn
+            .execute("DELETE FROM argument_presets WHERE id=?1", [id])?;
         Ok(())
     }
 
@@ -331,7 +332,8 @@ impl Database {
                     Ok(ArgumentPreset {
                         id: row.get(0)?,
                         name: row.get(1)?,
-                        arguments: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default(),
+                        arguments: serde_json::from_str(&row.get::<_, String>(2)?)
+                            .unwrap_or_default(),
                         created_at: row.get(3)?,
                         updated_at: row.get(4)?,
                     })
