@@ -261,11 +261,19 @@ impl Database {
         Ok(())
     }
 
-    pub fn delete(&self, id: &str) -> Result<()> {
-        self.conn.execute(
+    pub fn delete(&mut self, id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM play_sessions
+             WHERE item_id=?1
+               AND EXISTS(SELECT 1 FROM library_items WHERE id=?1 AND provider='custom')",
+            [id],
+        )?;
+        tx.execute(
             "DELETE FROM library_items WHERE id=?1 AND provider='custom'",
             [id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -834,6 +842,51 @@ mod tests {
                 .unwrap(),
             MIGRATIONS.len()
         );
+    }
+
+    #[test]
+    fn deletes_custom_items_with_play_history_without_touching_provider_items() {
+        let mut db = Database::memory().unwrap();
+        let custom = LibraryItem::new(
+            "custom:played".into(),
+            "Played shortcut".into(),
+            ItemKind::Application,
+            ProviderKind::Custom,
+        );
+        let desktop = LibraryItem::new(
+            "desktop:played".into(),
+            "Provider shortcut".into(),
+            ItemKind::Application,
+            ProviderKind::Desktop,
+        );
+        db.save_user_item(&custom).unwrap();
+        db.save_user_item(&desktop).unwrap();
+        db.start_session(&custom.id, 100).unwrap();
+        db.start_session(&desktop.id, 101).unwrap();
+
+        db.delete(&custom.id).unwrap();
+        db.delete(&desktop.id).unwrap();
+
+        assert!(db.get(&custom.id).unwrap().is_none());
+        assert!(db.get(&desktop.id).unwrap().is_some());
+        let custom_sessions: usize = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM play_sessions WHERE item_id=?1",
+                [&custom.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let desktop_sessions: usize = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM play_sessions WHERE item_id=?1",
+                [&desktop.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(custom_sessions, 0);
+        assert_eq!(desktop_sessions, 1);
     }
 
     #[test]

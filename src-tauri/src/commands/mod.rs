@@ -499,6 +499,11 @@ pub fn set_hidden(id: String, value: bool, state: State<AppState>) -> Result<()>
 
 #[tauri::command]
 pub fn delete_item(id: String, state: State<AppState>) -> Result<()> {
+    if state.process_manager.running().contains_key(&id) {
+        return Err(LauncherError::InvalidArguments(
+            "Feche o jogo ou aplicativo antes de removê-lo da biblioteca".into(),
+        ));
+    }
     state
         .database
         .lock()
