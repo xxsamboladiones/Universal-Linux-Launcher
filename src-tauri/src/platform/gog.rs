@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -19,25 +19,34 @@ pub(crate) struct GogCredentials {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct GogProduct {
-    id: serde_json::Value,
-    title: String,
-    is_installable: Option<bool>,
-    game_type: String,
-    images: GogImages,
-    content_system_compatibility: GogCompatibility,
+struct GogGamesDbRelease {
+    external_id: serde_json::Value,
+    #[serde(rename = "type")]
+    release_type: String,
+    title: HashMap<String, String>,
+    supported_operating_systems: Vec<GogOperatingSystem>,
+    game: GogGamesDbGame,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct GogImages {
-    background: String,
+struct GogOperatingSystem {
+    slug: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct GogCompatibility {
-    linux: bool,
+struct GogGamesDbGame {
+    visible_in_library: Option<bool>,
+    vertical_cover: Option<GogImageFormat>,
+    cover: Option<GogImageFormat>,
+    background: Option<GogImageFormat>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct GogImageFormat {
+    url_format: String,
 }
 
 pub(crate) fn parse_credentials(output: &[u8]) -> Result<GogCredentials> {
@@ -112,23 +121,26 @@ pub(crate) fn catalog_item(
     data_dir: &Path,
 ) -> Result<LibraryItem> {
     validate_product_id(product_id)?;
-    let product = metadata.and_then(|bytes| serde_json::from_slice::<GogProduct>(bytes).ok());
-    let verified_product = product.as_ref().filter(|product| {
-        json_product_id(&product.id).as_deref() == Some(product_id)
-            && product.title.len() <= 4_096
-            && !product.title.contains('\0')
-    });
-    let title = verified_product
-        .map(|product| product.title.trim())
+    let release =
+        metadata.and_then(|bytes| serde_json::from_slice::<GogGamesDbRelease>(bytes).ok());
+    let verified_release = release
+        .as_ref()
+        .filter(|release| json_product_id(&release.external_id).as_deref() == Some(product_id));
+    let title = verified_release
+        .and_then(localized_title)
         .filter(|title| !title.is_empty())
         .unwrap_or(product_id)
         .to_string();
-    let platform =
-        if verified_product.is_some_and(|product| product.content_system_compatibility.linux) {
-            "linux"
-        } else {
-            "windows"
-        };
+    let platform = if verified_release.is_some_and(|release| {
+        release
+            .supported_operating_systems
+            .iter()
+            .any(|system| system.slug.eq_ignore_ascii_case("linux"))
+    }) {
+        "linux"
+    } else {
+        "windows"
+    };
     let install_path = install_path(data_dir, product_id)?;
     let mut item = LibraryItem::new(
         format!("gog:{product_id}"),
@@ -151,7 +163,16 @@ pub(crate) fn catalog_item(
     }
     item.category = Some("GOG".into());
     item.tags = vec![format!("orbit:gog-platform:{platform}")];
-    item.cover = verified_product.and_then(|product| safe_image_url(&product.images.background));
+    item.cover = verified_release.and_then(|release| {
+        [
+            release.game.vertical_cover.as_ref(),
+            release.game.cover.as_ref(),
+            release.game.background.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|image| gamesdb_image_url(&image.url_format))
+    });
     item.owned = true;
     item.installed = valid_installation(&install_path, product_id, platform);
     item.working_directory = item
@@ -161,9 +182,9 @@ pub(crate) fn catalog_item(
 }
 
 pub(crate) fn is_installable_metadata(metadata: &[u8]) -> bool {
-    serde_json::from_slice::<GogProduct>(metadata).map_or(true, |product| {
-        (product.game_type.is_empty() || matches!(product.game_type.as_str(), "game" | "mod"))
-            && product.is_installable != Some(false)
+    serde_json::from_slice::<GogGamesDbRelease>(metadata).map_or(true, |release| {
+        (release.release_type.is_empty() || matches!(release.release_type.as_str(), "game" | "mod"))
+            && release.game.visible_in_library != Some(false)
     })
 }
 
@@ -222,23 +243,30 @@ fn json_product_id(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn safe_image_url(value: &str) -> Option<String> {
+fn localized_title(release: &GogGamesDbRelease) -> Option<&str> {
+    ["pt-BR", "*", "en-US"]
+        .into_iter()
+        .filter_map(|locale| release.title.get(locale))
+        .map(String::as_str)
+        .map(str::trim)
+        .find(|title| !title.is_empty() && title.len() <= 4_096 && !title.contains('\0'))
+}
+
+fn gamesdb_image_url(value: &str) -> Option<String> {
     let value = value.trim();
-    let normalized = value
-        .strip_prefix("//")
-        .map(|value| format!("https://{value}"))
-        .unwrap_or_else(|| value.to_string());
-    let remainder = normalized.strip_prefix("https://images-")?;
-    let (shard, path) = remainder.split_once(".gog-statics.com/")?;
-    if !matches!(shard, "1" | "2" | "3" | "4")
-        || path.is_empty()
-        || normalized.len() > 2_048
-        || normalized.chars().any(|character| {
+    if value.len() > 2_048
+        || !value.starts_with("https://images.gog.com/")
+        || value.chars().any(|character| {
             character.is_control()
                 || character.is_whitespace()
                 || matches!(character, '(' | ')' | '"' | '\\')
         })
     {
+        return None;
+    }
+    let normalized = value.replace("{formatter}", "").replace("{ext}", "jpg");
+    let path = normalized.strip_prefix("https://images.gog.com/")?;
+    if path.is_empty() || normalized.len() > 2_048 || normalized.contains(['{', '}']) {
         return None;
     }
     Some(normalized)
@@ -259,12 +287,17 @@ mod tests {
     }
 
     #[test]
-    fn builds_a_managed_catalog_item_and_trusts_only_gog_images() {
+    fn builds_a_managed_catalog_item_with_a_vertical_gamesdb_cover() {
         let root = tempfile::tempdir().unwrap();
         let metadata = br#"{
-          "id":1207658997,"title":"Thief Gold","is_installable":true,"game_type":"game",
-          "content_system_compatibility":{"linux":false},
-          "images":{"background":"//images-3.gog-statics.com/hash.jpg"}
+          "external_id":"1207658997","type":"game",
+          "title":{"*":"Thief Gold","pt-BR":"Thief Gold BR"},
+          "supported_operating_systems":[{"slug":"linux"}],
+          "game":{
+            "visible_in_library":true,
+            "vertical_cover":{"url_format":"https://images.gog.com/vertical{formatter}.{ext}?namespace=gamesdb"},
+            "background":{"url_format":"https://images.gog.com/background{formatter}.{ext}?namespace=gamesdb"}
+          }
         }"#;
         let item = catalog_item(
             "1207658997",
@@ -275,18 +308,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(item.id, "gog:1207658997");
-        assert_eq!(item.name, "Thief Gold");
+        assert_eq!(item.name, "Thief Gold BR");
         assert_eq!(
             item.cover.as_deref(),
-            Some("https://images-3.gog-statics.com/hash.jpg")
+            Some("https://images.gog.com/vertical.jpg?namespace=gamesdb")
         );
         assert_eq!(item.arguments[2], "launch");
-        assert_eq!(item.arguments[5..], ["--platform", "windows"]);
+        assert_eq!(item.arguments[5..], ["--platform", "linux", "--no-wine"]);
         assert!(!item.installed);
+    }
 
+    #[test]
+    fn rejects_untrusted_gamesdb_cover_urls_and_uses_the_background_only_as_fallback() {
+        let root = tempfile::tempdir().unwrap();
         let evil = br#"{
-          "id":1207658997,"title":"Safe title","is_installable":true,"game_type":"game",
-          "images":{"background":"//images-3.gog-statics.com.evil.test/hash.jpg"}
+          "external_id":"1207658997","title":{"*":"Safe title"},
+          "game":{"vertical_cover":{"url_format":"https://images.gog.com.evil.test/hash{formatter}.{ext}"}}
         }"#;
         assert_eq!(
             catalog_item(
@@ -300,6 +337,37 @@ mod tests {
             .cover,
             None
         );
+
+        let fallback = br#"{
+          "external_id":"1207658997","title":{"*":"Fallback"},
+          "game":{"background":{"url_format":"https://images.gog.com/background{formatter}.{ext}?namespace=gamesdb"}}
+        }"#;
+        assert_eq!(
+            catalog_item(
+                "1207658997",
+                Some(fallback),
+                Path::new("gogdl"),
+                Path::new("auth"),
+                root.path()
+            )
+            .unwrap()
+            .cover
+            .as_deref(),
+            Some("https://images.gog.com/background.jpg?namespace=gamesdb")
+        );
+    }
+
+    #[test]
+    fn filters_hidden_or_unsupported_gamesdb_releases() {
+        assert!(!is_installable_metadata(
+            br#"{"type":"game","game":{"visible_in_library":false}}"#
+        ));
+        assert!(!is_installable_metadata(
+            br#"{"type":"bonus","game":{"visible_in_library":true}}"#
+        ));
+        assert!(is_installable_metadata(
+            br#"{"type":"game","game":{"visible_in_library":true}}"#
+        ));
     }
 
     #[test]

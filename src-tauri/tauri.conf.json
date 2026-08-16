@@ -13,7 +13,7 @@
     "enableGTKAppId": true,
     "windows": [{ "title": "Orbit Launcher", "width": 1280, "height": 800, "minWidth": 900, "minHeight": 600 }],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https://cdn1.epicgames.com https://images-1.gog-statics.com https://images-2.gog-statics.com https://images-3.gog-statics.com https://images-4.gog-statics.com; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https://cdn1.epicgames.com https://images.gog.com; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": []

@@ -1859,7 +1859,7 @@ pub fn remove_store_operation(id: String, app: AppHandle, state: State<AppState>
 const STORE_LIBRARY_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 const STORE_LIBRARY_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 const STORE_LIBRARY_ERROR_LIMIT: usize = 256 * 1024;
-const GOG_PRODUCT_OUTPUT_LIMIT: u64 = 1024 * 1024;
+const GOG_METADATA_OUTPUT_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Debug, serde::Deserialize)]
 struct LegendaryLibraryEntry {
@@ -2008,12 +2008,12 @@ fn sync_gog_library(
     let product_ids = platform::gog::parse_owned_game_ids(&owned_output)?;
     let count = product_ids.len();
     let metadata_dir = tempfile::tempdir()?;
-    download_gog_product_metadata(&product_ids, metadata_dir.path(), control)?;
+    download_gog_gamesdb_metadata(&product_ids, metadata_dir.path(), control)?;
 
     let mut items = Vec::with_capacity(count);
     for product_id in product_ids {
         let metadata_path = metadata_dir.path().join(format!("{product_id}.json"));
-        let metadata = read_bounded_file(&metadata_path, GOG_PRODUCT_OUTPUT_LIMIT).ok();
+        let metadata = read_bounded_file(&metadata_path, GOG_METADATA_OUTPUT_LIMIT).ok();
         if metadata
             .as_deref()
             .is_some_and(|metadata| !platform::gog::is_installable_metadata(metadata))
@@ -2102,7 +2102,7 @@ fn run_gog_authenticated_request(
     read_temporary_output(&mut stdout, STORE_LIBRARY_OUTPUT_LIMIT, "biblioteca GOG")
 }
 
-fn download_gog_product_metadata(
+fn download_gog_gamesdb_metadata(
     product_ids: &[String],
     output_dir: &Path,
     control: &LibrarySyncControl,
@@ -2134,7 +2134,7 @@ fn download_gog_product_metadata(
             command
                 .arg("--url")
                 .arg(format!(
-                    "https://api.gog.com/products/{product_id}?locale=pt-BR"
+                    "https://gamesdb.gog.com/platforms/gog/external_releases/{product_id}"
                 ))
                 .arg("--output")
                 .arg(output_dir.join(format!("{product_id}.json")));
