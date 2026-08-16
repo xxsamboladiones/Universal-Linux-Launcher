@@ -63,3 +63,25 @@ pub fn validate(path: &Path) -> Result<PathBuf> {
     }
     Ok(canonical)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_relative_and_missing_wallpapers() {
+        assert!(validate(Path::new("../wallpaper.png")).is_err());
+        assert!(validate(Path::new("/definitely/missing/orbit-wallpaper.png")).is_err());
+    }
+
+    #[test]
+    fn reads_a_plasma_wallpaper_without_executing_anything() {
+        let directory = tempfile::tempdir().unwrap();
+        let wallpaper = directory.path().join("wall paper.png");
+        fs::write(&wallpaper, b"image placeholder").unwrap();
+        let config = directory.path().join("plasma-config");
+        let encoded = wallpaper.to_string_lossy().replace(' ', "%20");
+        fs::write(&config, format!("[Wallpaper]\nImage=file://{encoded}\n")).unwrap();
+        assert_eq!(read_kde_wallpaper(&config).unwrap(), Some(wallpaper));
+    }
+}

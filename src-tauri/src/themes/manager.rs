@@ -400,6 +400,10 @@ fn builtin(
                 success: "#4ade80".into(),
                 warning: "#facc15".into(),
                 error: "#f87171".into(),
+                accent: None,
+                primary_foreground: None,
+                secondary_foreground: None,
+                accent_foreground: None,
             },
             radius: Radius {
                 small: "6px".into(),

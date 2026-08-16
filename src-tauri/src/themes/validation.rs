@@ -77,6 +77,21 @@ pub fn validate_tokens(t: &ThemeTokens) -> Result<()> {
             )));
         }
     }
+    for color in [
+        t.colors.accent.as_deref(),
+        t.colors.primary_foreground.as_deref(),
+        t.colors.secondary_foreground.as_deref(),
+        t.colors.accent_foreground.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !valid_color(color) {
+            return Err(LauncherError::InvalidTheme(format!(
+                "cor opcional inválida: {color}"
+            )));
+        }
+    }
     for length in [
         &t.radius.small,
         &t.radius.medium,

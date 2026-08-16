@@ -31,28 +31,74 @@ pub fn generate(
     manual: Option<String>,
 ) -> Result<AutomaticTheme> {
     let influence = influence.min(100);
-    let source = providers::pywal_status();
-    if source_preference != "native" && source.available {
-        if let Some(palette) = providers::pywal_palette(influence, color_mode)? {
-            return Ok(AutomaticTheme {
+    let fallback_key = format!("last-{influence}-{color_mode}");
+    match generate_inner(influence, color_mode, source_preference, manual) {
+        Ok(theme) => {
+            if let Err(error) = cache::save(&fallback_key, &theme.palette) {
+                tracing::warn!(%error, "não foi possível atualizar o cache da paleta automática");
+            }
+            Ok(theme)
+        }
+        Err(error) => {
+            let Some(palette) = cache::load(&fallback_key) else {
+                return Err(error);
+            };
+            Ok(AutomaticTheme {
                 tokens: palette.tokens(),
                 palette,
-                source: source.provider,
-                wallpaper_path: providers::pywal_wallpaper_path()
-                    .or(manual.clone())
-                    .unwrap_or_else(|| "Wallpaper do Pywal".into()),
-                palette_hash: "pywal".into(),
-            });
+                source: "Última paleta válida".into(),
+                wallpaper_path: "Wallpaper anterior".into(),
+                palette_hash: fallback_key,
+            })
+        }
+    }
+}
+
+fn generate_inner(
+    influence: u8,
+    color_mode: &str,
+    source_preference: &str,
+    manual: Option<String>,
+) -> Result<AutomaticTheme> {
+    let source = providers::pywal_status();
+    if source_preference != "native" && source.available {
+        match providers::pywal_palette(influence, color_mode) {
+            Ok(Some(result)) => {
+                let palette = result.palette;
+                return Ok(AutomaticTheme {
+                    tokens: palette.tokens(),
+                    palette,
+                    source: source.provider,
+                    wallpaper_path: result
+                        .wallpaper
+                        .or_else(providers::pywal_wallpaper_path)
+                        .or(manual.clone())
+                        .unwrap_or_else(|| "Wallpaper do Pywal".into()),
+                    palette_hash: result.hash,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "paleta Pywal inválida; tentando gerador nativo");
+            }
         }
     }
     let path = match manual {
         Some(path) => wallpaper::validate(&PathBuf::from(path))?,
         None => wallpaper::current_wallpaper()?,
     };
-    let (palette, hash) = providers::native_palette(&path, influence, color_mode)?;
+    let (bytes, hash) = providers::wallpaper_bytes(&path)?;
     let key = format!("{hash}-{influence}-{color_mode}");
-    let palette = cache::load(&key).unwrap_or(palette);
-    cache::save(&key, &palette)?;
+    let palette = match cache::load(&key) {
+        Some(palette) => palette,
+        None => {
+            let palette = providers::native_palette(&bytes, influence, color_mode)?;
+            if let Err(error) = cache::save(&key, &palette) {
+                tracing::warn!(%error, "não foi possível gravar o cache da paleta automática");
+            }
+            palette
+        }
+    };
     Ok(AutomaticTheme {
         tokens: palette.tokens(),
         palette,

@@ -77,6 +77,21 @@ fn readable(background: Rgb, preferred: Rgb) -> Rgb {
         Rgb(0, 0, 0)
     }
 }
+fn distinguish(background: Rgb, candidate: Rgb, dark: bool) -> Rgb {
+    let target = if dark {
+        Rgb(255, 255, 255)
+    } else {
+        Rgb(0, 0, 0)
+    };
+    let mut adjusted = candidate;
+    for _ in 0..32 {
+        if contrast(background, adjusted) >= 3.0 {
+            break;
+        }
+        adjusted = adjusted.mix(target, 0.15);
+    }
+    adjusted
+}
 pub fn normalized(
     background: &str,
     primary: &str,
@@ -97,6 +112,8 @@ pub fn normalized(
     } else {
         raw.mix(Rgb(248, 250, 252), 1.0 - influence as f32 / 100.0)
     };
+    let p = distinguish(base, p, dark);
+    let s = distinguish(base, s, dark);
     let foreground = readable(
         base,
         if dark {
@@ -105,7 +122,13 @@ pub fn normalized(
             Rgb(22, 32, 51)
         },
     );
-    let muted = base.mix(foreground, 0.55);
+    let mut muted = base.mix(foreground, 0.55);
+    for _ in 0..32 {
+        if contrast(base, muted) >= 4.5 {
+            break;
+        }
+        muted = muted.mix(foreground, 0.15);
+    }
     let surface = base.mix(foreground, if dark { 0.07 } else { 0.035 });
     let elevated = base.mix(foreground, if dark { 0.12 } else { 0.07 });
     let border = base.mix(foreground, 0.18);
@@ -122,9 +145,9 @@ pub fn normalized(
         secondary: s.hex(),
         accent: p.mix(s, 0.5).hex(),
         border: border.hex(),
-        success: "#4ade80".into(),
-        warning: "#facc15".into(),
-        error: "#f87171".into(),
+        success: if dark { "#4ade80" } else { "#15803d" }.into(),
+        warning: if dark { "#facc15" } else { "#a16207" }.into(),
+        error: if dark { "#f87171" } else { "#b91c1c" }.into(),
         primary_foreground: primary_fg.hex(),
         secondary_foreground: secondary_fg.hex(),
         accent_foreground: readable(p.mix(s, 0.5), foreground).hex(),
@@ -132,6 +155,45 @@ pub fn normalized(
     })
 }
 impl ColorPalette {
+    pub fn validate(&self) -> Result<()> {
+        for color in [
+            &self.background,
+            &self.background_alt,
+            &self.surface,
+            &self.surface_elevated,
+            &self.foreground,
+            &self.foreground_muted,
+            &self.primary,
+            &self.secondary,
+            &self.accent,
+            &self.border,
+            &self.success,
+            &self.warning,
+            &self.error,
+            &self.primary_foreground,
+            &self.secondary_foreground,
+            &self.accent_foreground,
+        ] {
+            parse(color)?;
+        }
+        if contrast(parse(&self.background)?, parse(&self.foreground)?) < 4.5 {
+            return Err(LauncherError::InvalidTheme(
+                "paleta automática sem contraste suficiente".into(),
+            ));
+        }
+        if contrast(parse(&self.background)?, parse(&self.foreground_muted)?) < 4.5
+            || contrast(parse(&self.background)?, parse(&self.primary)?) < 3.0
+            || contrast(parse(&self.primary)?, parse(&self.primary_foreground)?) < 4.5
+            || contrast(parse(&self.secondary)?, parse(&self.secondary_foreground)?) < 4.5
+            || contrast(parse(&self.accent)?, parse(&self.accent_foreground)?) < 4.5
+        {
+            return Err(LauncherError::InvalidTheme(
+                "paleta automática com contraste insuficiente nos controles".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn tokens(&self) -> ThemeTokens {
         ThemeTokens {
             colors: Colors {
@@ -146,6 +208,10 @@ impl ColorPalette {
                 success: self.success.clone(),
                 warning: self.warning.clone(),
                 error: self.error.clone(),
+                accent: Some(self.accent.clone()),
+                primary_foreground: Some(self.primary_foreground.clone()),
+                secondary_foreground: Some(self.secondary_foreground.clone()),
+                accent_foreground: Some(self.accent_foreground.clone()),
             },
             radius: Radius {
                 small: "6px".into(),
@@ -172,7 +238,16 @@ mod tests {
     fn black_and_white_remain_readable() {
         for bg in ["#000000", "#ffffff", "#ee0000", "#0055ff"] {
             let p = normalized(bg, "#8b5cf6", "#22c55e", 100, "automatic").unwrap();
-            assert!(contrast(parse(&p.background).unwrap(), parse(&p.foreground).unwrap()) >= 4.5)
+            let background = parse(&p.background).unwrap();
+            assert!(contrast(background, parse(&p.foreground).unwrap()) >= 4.5);
+            assert!(contrast(background, parse(&p.foreground_muted).unwrap()) >= 4.5);
+            assert!(contrast(background, parse(&p.primary).unwrap()) >= 3.0);
+            assert!(
+                contrast(
+                    parse(&p.primary).unwrap(),
+                    parse(&p.primary_foreground).unwrap()
+                ) >= 4.5
+            );
         }
     }
 }

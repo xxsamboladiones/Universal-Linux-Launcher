@@ -2,6 +2,7 @@ use super::generate;
 use crate::commands::AppState;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
+    fs,
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -19,14 +20,10 @@ pub struct PywalWatcher {
 
 impl PywalWatcher {
     pub fn install(app: AppHandle) -> Result<Self, String> {
-        let Some(home) = dirs::home_dir() else {
-            return Err("diretório pessoal indisponível".into());
+        let Some(wal_dir) = super::providers::pywal_cache_dir() else {
+            return Err("cache XDG do usuário indisponível".into());
         };
-        let cache = home.join(".cache");
-        let wal_dir = cache.join("wal");
-        if !cache.is_dir() {
-            return Err("cache do usuário indisponível".into());
-        }
+        fs::create_dir_all(&wal_dir).map_err(|error| error.to_string())?;
         let generation = Arc::new(AtomicU64::new(0));
         let callback_app = app.clone();
         let mut watcher = RecommendedWatcher::new(
@@ -49,10 +46,7 @@ impl PywalWatcher {
         )
         .map_err(|error| error.to_string())?;
         watcher
-            .watch(
-                if wal_dir.is_dir() { &wal_dir } else { &cache },
-                RecursiveMode::Recursive,
-            )
+            .watch(&wal_dir, RecursiveMode::NonRecursive)
             .map_err(|error| error.to_string())?;
         Ok(Self { _watcher: watcher })
     }
@@ -74,9 +68,8 @@ fn refresh(app: AppHandle) {
     else {
         return;
     };
-    if !settings.automatic_update
-        || settings.theme_mode != "automatic"
-        || settings.palette_source == "native"
+    let update_enabled = settings.automatic_update || settings.palette_source == "pywal";
+    if !update_enabled || settings.theme_mode != "automatic" || settings.palette_source == "native"
     {
         return;
     }
@@ -89,4 +82,20 @@ fn refresh(app: AppHandle) {
         return;
     };
     let _ = app.emit("automatic-theme-updated", theme);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_pywal_colors_events() {
+        assert!(is_pywal_path(Path::new(
+            "/home/user/.cache/wal/colors.json"
+        )));
+        assert!(!is_pywal_path(Path::new(
+            "/home/user/.cache/wal/colors.css"
+        )));
+        assert!(!is_pywal_path(Path::new("/tmp/colors.json")));
+    }
 }

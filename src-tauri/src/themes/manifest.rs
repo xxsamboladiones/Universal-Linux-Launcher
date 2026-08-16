@@ -49,6 +49,14 @@ pub struct Colors {
     pub success: String,
     pub warning: String,
     pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_foreground: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_foreground: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent_foreground: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Radius {
