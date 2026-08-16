@@ -8,6 +8,7 @@ mod platform;
 mod process;
 mod product;
 mod providers;
+mod themes;
 use commands::AppState;
 use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -128,7 +129,15 @@ pub fn run() {
             commands::export_backup,
             commands::import_backup,
             commands::check_for_updates,
-            commands::install_update
+            commands::install_update,
+            commands::list_themes,
+            commands::get_theme,
+            commands::get_active_theme,
+            commands::set_active_theme,
+            commands::import_theme,
+            commands::remove_theme,
+            commands::export_theme,
+            commands::validate_theme
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orbit Launcher");

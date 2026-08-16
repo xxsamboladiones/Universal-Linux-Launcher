@@ -5,14 +5,22 @@ use std::collections::HashMap;
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     pub theme: String,
+    /// ID do tema declarativo ativo. `theme` permanece para desserializar
+    /// preferências gravadas por versões anteriores do Orbit.
+    #[serde(default = "default_active_theme_id")]
+    pub active_theme_id: String,
     pub scan_on_startup: bool,
     pub confirm_before_remove: bool,
     pub preferred_terminal: Option<String>,
+}
+fn default_active_theme_id() -> String {
+    "orbit-dark".into()
 }
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: "dark".into(),
+            active_theme_id: "orbit-dark".into(),
             scan_on_startup: false,
             confirm_before_remove: true,
             preferred_terminal: Some("konsole".into()),

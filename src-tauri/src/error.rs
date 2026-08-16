@@ -19,6 +19,10 @@ pub enum LauncherError {
     Io(#[from] std::io::Error),
     #[error("Item não encontrado: {0}")]
     NotFound(String),
+    #[error("Tema inválido: {0}")]
+    InvalidTheme(String),
+    #[error("Falha ao processar arquivo compactado: {0}")]
+    Archive(String),
 }
 impl Serialize for LauncherError {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {

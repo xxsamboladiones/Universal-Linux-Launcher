@@ -27,6 +27,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ico = "0.5"
 sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+semver = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", features = ["v3_24"] }
