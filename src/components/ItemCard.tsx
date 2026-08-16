@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { LibraryItem } from "../types/library";
+import { usableCover } from "../services/covers";
 
 interface Props {
   item: LibraryItem;
@@ -38,14 +39,16 @@ export function ItemCard({
   onUninstall,
 }: Props) {
   const icon = item.icon?.startsWith("/") ? convertFileSrc(item.icon) : null;
-  const cover = item.cover?.startsWith("/")
-    ? convertFileSrc(item.cover)
-    : item.cover;
+  const coverSource = usableCover(item);
+  const cover = coverSource?.startsWith("/")
+    ? convertFileSrc(coverSource)
+    : coverSource;
   const [failedCover, setFailedCover] = useState<string | null>(null);
   const visibleCover = cover && cover !== failedCover ? cover : null;
+  const managedDownload = ["epic", "gog"].includes(item.provider);
   const canActivate = item.installed
     ? Boolean(item.executable) && !running && !uninstalling
-    : item.provider === "epic" && !installing;
+    : managedDownload && !installing;
   const activate = () => {
     if (!canActivate) return;
     if (item.installed) onLaunch();
@@ -101,7 +104,7 @@ export function ItemCard({
               <Play fill="currentColor" />
             )}
           </button>
-        ) : item.provider === "epic" ? (
+        ) : managedDownload ? (
           <button
             aria-label={installing ? "Instalação na fila" : "Baixar"}
             className="play install"
@@ -124,7 +127,7 @@ export function ItemCard({
               : uninstalling
                 ? "Desinstalando…"
                 : installing
-                  ? "Epic · Instalação na fila"
+                  ? `${item.provider === "epic" ? "Epic" : "GOG"} · Instalação na fila`
                   : !item.installed
                     ? `${item.provider} · Não instalado`
                     : `${item.provider} · ${item.category ?? item.kind}`}
@@ -144,7 +147,9 @@ export function ItemCard({
           <Pencil size={18} />
         </button>
         {item.installed &&
-          ["epic", "steam", "flatpak", "appimage"].includes(item.provider) && (
+          ["epic", "gog", "steam", "flatpak", "appimage"].includes(
+            item.provider,
+          ) && (
             <button
               aria-label="Desinstalar"
               title="Desinstalar"

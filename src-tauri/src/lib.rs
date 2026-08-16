@@ -8,6 +8,7 @@ mod platform;
 mod process;
 mod product;
 mod providers;
+mod themes;
 use commands::AppState;
 use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -50,6 +51,11 @@ pub fn run() {
                 library_sync_manager: commands::LibrarySyncManager::default(),
                 data_dir: data,
             });
+            if let Ok(watcher) = themes::automatic::PywalWatcher::install(app.handle().clone()) {
+                app.manage(watcher);
+            } else {
+                tracing::debug!("watcher Pywal indisponível; atualizações continuarão manuais");
+            }
             if let (Some(window), Some(icon)) =
                 (app.get_webview_window("main"), app.default_window_icon())
             {
@@ -117,6 +123,7 @@ pub fn run() {
             commands::open_compatibility_log,
             commands::rollback_dependency,
             commands::connect_provider,
+            commands::open_provider_login,
             commands::store_provider_token,
             commands::queue_store_operation,
             commands::retry_operation,
@@ -128,7 +135,21 @@ pub fn run() {
             commands::export_backup,
             commands::import_backup,
             commands::check_for_updates,
-            commands::install_update
+            commands::install_update,
+            themes::commands::list_themes,
+            themes::commands::get_theme,
+            themes::commands::get_active_theme,
+            themes::commands::set_active_theme,
+            themes::commands::import_theme,
+            themes::commands::remove_theme,
+            themes::commands::export_theme,
+            themes::commands::validate_theme,
+            themes::commands::detect_color_scheme_provider,
+            themes::commands::get_current_wallpaper,
+            themes::commands::generate_automatic_palette,
+            themes::commands::get_automatic_theme,
+            themes::commands::refresh_automatic_theme,
+            themes::commands::get_pywal_status
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orbit Launcher");

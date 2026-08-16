@@ -1,0 +1,35 @@
+import type { ThemeTokens } from "../types";
+const variables = (tokens: ThemeTokens): Record<string, string> => ({
+  "--orbit-color-background": tokens.colors.background,
+  "--orbit-color-surface": tokens.colors.surface,
+  "--orbit-color-surface-elevated": tokens.colors.surfaceElevated,
+  "--orbit-color-primary": tokens.colors.primary,
+  "--orbit-color-secondary": tokens.colors.secondary,
+  "--orbit-color-accent": tokens.colors.accent ?? tokens.colors.primary,
+  "--orbit-color-text": tokens.colors.text,
+  "--orbit-color-text-muted": tokens.colors.textMuted,
+  "--orbit-color-border": tokens.colors.border,
+  "--orbit-color-success": tokens.colors.success,
+  "--orbit-color-warning": tokens.colors.warning,
+  "--orbit-color-error": tokens.colors.error,
+  "--orbit-color-on-primary":
+    tokens.colors.primaryForeground ?? tokens.colors.text,
+  "--orbit-color-on-secondary":
+    tokens.colors.secondaryForeground ?? tokens.colors.text,
+  "--orbit-color-on-accent":
+    tokens.colors.accentForeground ?? tokens.colors.text,
+  "--orbit-radius-small": tokens.radius.small,
+  "--orbit-radius-medium": tokens.radius.medium,
+  "--orbit-radius-large": tokens.radius.large,
+  "--orbit-spacing-unit": tokens.spacing.unit,
+  "--orbit-font-family": tokens.typography.fontFamily,
+  "--orbit-heading-weight": String(tokens.typography.headingWeight),
+  "--orbit-body-weight": String(tokens.typography.bodyWeight),
+  "--orbit-effect-blur": tokens.effects.blur,
+  "--orbit-effect-shadow": tokens.effects.shadow,
+});
+export function applyThemeTokens(tokens: ThemeTokens) {
+  const root = document.documentElement;
+  for (const [name, value] of Object.entries(variables(tokens)))
+    root.style.setProperty(name, value);
+}

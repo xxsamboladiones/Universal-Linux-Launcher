@@ -113,7 +113,21 @@ export function PlatformsPage() {
     return () => { void unlisten.then((stop) => stop()); };
   }, []);
 
-  const connectAccount = (account: StoreAccount) => {
+  const connectAccount = async (account: StoreAccount) => {
+    if (account.provider === "gog") {
+      try {
+        await backend.openProviderLogin("gog");
+      } catch (error) {
+        window.alert(`Não foi possível abrir o login do GOG: ${String(error)}`);
+        return;
+      }
+      const response = window.prompt(
+        "Conclua o login no navegador. Na página final, copie a URL completa da barra de endereços e cole aqui.\n\nEla deve começar com https://embed.gog.com/on_login_success?",
+      );
+      const authorization = response?.trim();
+      if (!authorization) return;
+      return connect("gog", authorization);
+    }
     if (account.provider !== "steam") {
       return connect(account.provider);
     }
@@ -131,8 +145,11 @@ export function PlatformsPage() {
     if (account.state === "component_required") {
       return prepare(account.provider);
     }
-    if (account.state === "connected" && account.provider === "epic") {
-      return syncLibrary("epic");
+    if (
+      account.state === "connected" &&
+      ["epic", "gog"].includes(account.provider)
+    ) {
+      return syncLibrary(account.provider);
     }
     return connectAccount(account);
   };
@@ -181,7 +198,8 @@ export function PlatformsPage() {
                 loading ||
                 Boolean(preparing[account.provider]) ||
                 Boolean(syncing[account.provider]) ||
-                (account.state === "connected" && account.provider !== "epic")
+                (account.state === "connected" &&
+                  !["epic", "gog"].includes(account.provider))
               }
               aria-busy={Boolean(syncing[account.provider])}
               onClick={() => void handleAccountAction(account)}
@@ -193,10 +211,18 @@ export function PlatformsPage() {
                     ? progressLabel(dependencyProgress[account.provider] ?? null)
                     : "Preparar suporte"}
                 </>
-              ) : account.state === "connected" && account.provider === "epic" ? <>
-                <RefreshCw className={syncing.epic ? "spin" : ""} size={16}/>
-                {syncing.epic ? "Sincronizando…" : "Sincronizar biblioteca"}
-              </> : (
+              ) : account.state === "connected" &&
+                ["epic", "gog"].includes(account.provider) ? (
+                <>
+                  <RefreshCw
+                    className={syncing[account.provider] ? "spin" : ""}
+                    size={16}
+                  />
+                  {syncing[account.provider]
+                    ? "Sincronizando…"
+                    : "Sincronizar biblioteca"}
+                </>
+              ) : (
                 <>
                   <ExternalLink size={16} />
                   Conectar
@@ -207,7 +233,7 @@ export function PlatformsPage() {
         ))}
       </section>
       <div className="section-title"><div><p>FILA TRANSACIONAL</p><h2>Instalações e atualizações</h2></div><Download size={22}/></div>
-      <div className="operation-create"><select value={operationProvider} onChange={event=>setOperationProvider(event.target.value as StoreId)}><option value="epic">Epic</option><option value="steam">SteamCMD</option><option value="gog">GOG</option><option value="battlenet">Battle.net</option></select><input value={operationItem} onChange={event=>setOperationItem(event.target.value)} placeholder="AppID ou identificador do jogo"/><button disabled={!operationItem.trim()} onClick={()=>void backend.queueStoreOperation(operationProvider,operationItem.trim(),"install").then(()=>{setOperationItem("");return load()})}><Download size={15}/>Adicionar instalação</button></div>
+      <div className="operation-create"><select value={operationProvider} onChange={event=>setOperationProvider(event.target.value as StoreId)}><option value="epic">Epic</option><option value="steam">SteamCMD</option><option value="gog">GOG</option></select><input value={operationItem} onChange={event=>setOperationItem(event.target.value)} placeholder="AppID ou identificador do jogo"/><button disabled={!operationItem.trim()} onClick={()=>void backend.queueStoreOperation(operationProvider,operationItem.trim(),"install").then(()=>{setOperationItem("");return load()})}><Download size={15}/>Adicionar instalação</button></div>
       <section className="dependency-list operation-list">
         {overview?.operations.length ? (
           overview.operations.map((operation) => {

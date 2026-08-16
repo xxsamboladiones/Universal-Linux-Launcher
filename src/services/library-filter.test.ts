@@ -76,4 +76,17 @@ describe("library provider filters", () => {
     expect(visibleInLibrary(localOnly, "game")).toBe(true);
     expect(visibleInLibrary(localOnly, "epic")).toBe(false);
   });
+
+  it("exposes owned uninstalled GOG games in the GOG catalog", () => {
+    const game = epicGame({
+      id: "gog:1207658997",
+      provider: "gog",
+      name: "GOG Example",
+      category: "GOG",
+    });
+
+    expect(visibleInLibrary(game, "gog")).toBe(true);
+    expect(visibleInLibrary(game, "all")).toBe(false);
+    expect(visibleInLibrary(game, "epic")).toBe(false);
+  });
 });

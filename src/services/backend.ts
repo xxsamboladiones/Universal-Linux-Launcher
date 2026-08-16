@@ -8,6 +8,8 @@ import type {
   CompatibilityOverview,
 } from "../types/library";
 import type { PlatformOverview, StoreId } from "../types/platform";
+import type { ThemeDetails, ThemeSummary } from "../features/themes/types";
+import type { AutomaticTheme, ProviderStatus } from "../features/themes/types";
 export interface ProductStatus {
   autostart: boolean;
   appimage: boolean;
@@ -96,15 +98,6 @@ const overview: PlatformOverview = {
       dependencyIds: [],
       strategy: "replacement",
     },
-    {
-      provider: "battlenet",
-      displayName: "Battle.net",
-      description: "Cliente oficial isolado em um prefixo Wine gerenciado.",
-      state: "component_required",
-      librarySize: 0,
-      dependencyIds: ["wine-ge", "battlenet-client"],
-      strategy: "managed_client",
-    },
   ],
   dependencies: [
     {
@@ -123,24 +116,6 @@ const overview: PlatformOverview = {
       state: "missing",
       installedVersion: null,
       requiredDiskBytes: 55_000_000,
-      executable: null,
-    },
-    {
-      id: "wine-ge",
-      name: "Wine-GE",
-      provider: "compatibility",
-      state: "missing",
-      installedVersion: null,
-      requiredDiskBytes: 680_000_000,
-      executable: null,
-    },
-    {
-      id: "battlenet-client",
-      name: "Battle.net Client",
-      provider: "battlenet",
-      state: "missing",
-      installedVersion: null,
-      requiredDiskBytes: 500_000_000,
       executable: null,
     },
   ],
@@ -197,6 +172,8 @@ export const backend = {
     invoke<void>("prepare_provider", { provider }),
   connectProvider: (provider: StoreId, user?: string) =>
     invoke<void>("connect_provider", { provider, user }),
+  openProviderLogin: (provider: StoreId) =>
+    invoke<void>("open_provider_login", { provider }),
   queueStoreOperation: (
     provider: StoreId,
     itemId: string,
@@ -232,4 +209,17 @@ export const backend = {
     invoke<void>("delete_argument_preset", { id }),
   getArgumentPreset: (id: string) =>
     invoke<ArgumentPreset | null>("get_argument_preset", { id }),
+  listThemes: () => invoke<ThemeSummary[]>("list_themes"),
+  getTheme: (id: string) => invoke<ThemeDetails>("get_theme", { id }),
+  getActiveTheme: () => invoke<ThemeDetails>("get_active_theme"),
+  setActiveTheme: (id: string) => invoke<ThemeDetails>("set_active_theme", { id }),
+  validateTheme: (path: string) => invoke<ThemeSummary>("validate_theme", { path }),
+  importTheme: (path: string) => invoke<ThemeSummary>("import_theme", { path }),
+  removeTheme: (id: string) => invoke<void>("remove_theme", { id }),
+  exportTheme: (id: string, path: string) => invoke<void>("export_theme", { id, path }),
+  colorSchemeProvider: () => invoke<ProviderStatus>("detect_color_scheme_provider"),
+  pywalStatus: () => invoke<ProviderStatus>("get_pywal_status"),
+  currentWallpaper: () => invoke<string>("get_current_wallpaper"),
+  automaticTheme: () => invoke<AutomaticTheme>("get_automatic_theme"),
+  refreshAutomaticTheme: () => invoke<AutomaticTheme>("refresh_automatic_theme"),
 };

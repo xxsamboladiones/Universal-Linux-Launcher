@@ -46,6 +46,14 @@ const MIGRATIONS: &[&str] = &[
         id TEXT PRIMARY KEY, name TEXT NOT NULL, arguments TEXT NOT NULL,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );",
+    // Battle.net integration was removed because the Windows launcher is not
+    // reliable under the supported Wine environments. Remove only Orbit's
+    // generated database state; prefixes and downloaded files stay untouched.
+    "DELETE FROM play_sessions WHERE item_id='battlenet:client';
+     DELETE FROM library_items WHERE id='battlenet:client' AND provider='battlenet';
+     DELETE FROM transfer_operations WHERE provider='battlenet';
+     DELETE FROM managed_dependencies WHERE id='battlenet-client' OR provider='battlenet';
+     DELETE FROM provider_accounts WHERE provider='battlenet';",
 ];
 
 pub struct Database {
@@ -261,11 +269,19 @@ impl Database {
         Ok(())
     }
 
-    pub fn delete(&self, id: &str) -> Result<()> {
-        self.conn.execute(
+    pub fn delete(&mut self, id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM play_sessions
+             WHERE item_id=?1
+               AND EXISTS(SELECT 1 FROM library_items WHERE id=?1 AND provider='custom')",
+            [id],
+        )?;
+        tx.execute(
             "DELETE FROM library_items WHERE id=?1 AND provider='custom'",
             [id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -276,9 +292,13 @@ impl Database {
                 row.get(0)
             })
             .optional()?;
-        Ok(value
+        let mut settings: AppSettings = value
             .and_then(|json| serde_json::from_str(&json).ok())
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if settings.last_manual_theme_id.is_empty() {
+            settings.last_manual_theme_id = settings.active_theme_id.clone();
+        }
+        Ok(settings)
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> Result<()> {
@@ -771,6 +791,23 @@ mod tests {
     use crate::core::model::*;
 
     #[test]
+    fn migrates_the_last_manual_theme_from_legacy_settings() {
+        let db = Database::memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('app',?1)",
+                [r#"{"activeThemeId":"midnight","themeMode":"automatic"}"#],
+            )
+            .unwrap();
+
+        let settings = db.settings().unwrap();
+
+        assert_eq!(settings.active_theme_id, "midnight");
+        assert_eq!(settings.last_manual_theme_id, "midnight");
+        assert_eq!(settings.theme_mode, "automatic");
+    }
+
+    #[test]
     fn migration_repairs_legacy_epic_catalog_without_touching_local_entries() {
         let conn = Connection::open_in_memory().unwrap();
         for migration in MIGRATIONS.iter().take(5) {
@@ -813,6 +850,106 @@ mod tests {
                 .unwrap(),
             MIGRATIONS.len()
         );
+    }
+
+    #[test]
+    fn migration_removes_only_orbit_managed_battlenet_state() {
+        let mut db = Database::memory().unwrap();
+        let battlenet = LibraryItem::new(
+            "battlenet:client".into(),
+            "Battle.net".into(),
+            ItemKind::Application,
+            ProviderKind::Battlenet,
+        );
+        let custom = LibraryItem::new(
+            "custom:wine-app".into(),
+            "User Wine app".into(),
+            ItemKind::Application,
+            ProviderKind::Custom,
+        );
+        db.save_user_item(&battlenet).unwrap();
+        db.save_user_item(&custom).unwrap();
+        db.start_session(&battlenet.id, 100).unwrap();
+        db.upsert_provider_account("battlenet", "connected", None)
+            .unwrap();
+        let operation = Operation {
+            id: "battlenet:operation".into(),
+            provider: "battlenet".into(),
+            item_id: "client".into(),
+            action: "install".into(),
+            state: "queued".into(),
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            bytes_per_second: 0,
+            error: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        };
+        db.queue_operation(&operation).unwrap();
+        db.conn
+            .pragma_update(None, "user_version", MIGRATIONS.len() - 1)
+            .unwrap();
+
+        db.migrate().unwrap();
+
+        assert!(db.get(&battlenet.id).unwrap().is_none());
+        assert!(db.get(&custom.id).unwrap().is_some());
+        assert!(db.provider_account("battlenet").unwrap().is_none());
+        assert!(db.operation(&operation.id).unwrap().is_none());
+        let sessions: usize = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM play_sessions WHERE item_id=?1",
+                [&battlenet.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sessions, 0);
+    }
+
+    #[test]
+    fn deletes_custom_items_with_play_history_without_touching_provider_items() {
+        let mut db = Database::memory().unwrap();
+        let custom = LibraryItem::new(
+            "custom:played".into(),
+            "Played shortcut".into(),
+            ItemKind::Application,
+            ProviderKind::Custom,
+        );
+        let desktop = LibraryItem::new(
+            "desktop:played".into(),
+            "Provider shortcut".into(),
+            ItemKind::Application,
+            ProviderKind::Desktop,
+        );
+        db.save_user_item(&custom).unwrap();
+        db.save_user_item(&desktop).unwrap();
+        db.start_session(&custom.id, 100).unwrap();
+        db.start_session(&desktop.id, 101).unwrap();
+
+        db.delete(&custom.id).unwrap();
+        db.delete(&desktop.id).unwrap();
+
+        assert!(db.get(&custom.id).unwrap().is_none());
+        assert!(db.get(&desktop.id).unwrap().is_some());
+        let custom_sessions: usize = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM play_sessions WHERE item_id=?1",
+                [&custom.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let desktop_sessions: usize = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM play_sessions WHERE item_id=?1",
+                [&desktop.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(custom_sessions, 0);
+        assert_eq!(desktop_sessions, 1);
     }
 
     #[test]

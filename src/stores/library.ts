@@ -83,7 +83,11 @@ export const useLibrary = create<State>((set, get) => ({
     }
   },
   install: async (i) => {
-    if (i.provider !== "epic" || i.installed || get().installing[i.id]) {
+    if (
+      !["epic", "gog"].includes(i.provider) ||
+      i.installed ||
+      get().installing[i.id]
+    ) {
       return false;
     }
     set((state) => ({
@@ -92,8 +96,8 @@ export const useLibrary = create<State>((set, get) => ({
     }));
     try {
       await backend.queueStoreOperation(
-        "epic",
-        i.id.replace(/^epic:/, ""),
+        i.provider as "epic" | "gog",
+        i.id.replace(/^(epic|gog):/, ""),
         "install",
       );
       return true;
@@ -154,8 +158,12 @@ export const useLibrary = create<State>((set, get) => ({
   },
   setProgress: (progress) => set({ progress }),
   applyTransfer: (operation) => {
-    if (operation.provider !== "epic" || operation.action !== "install") return;
-    const itemId = `epic:${operation.itemId}`;
+    if (
+      !["epic", "gog"].includes(operation.provider) ||
+      operation.action !== "install"
+    )
+      return;
+    const itemId = `${operation.provider}:${operation.itemId}`;
     const active = ["queued", "running", "cancelling", "paused"].includes(
       operation.state,
     );

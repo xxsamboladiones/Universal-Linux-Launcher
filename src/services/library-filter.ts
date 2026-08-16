@@ -7,8 +7,8 @@ import type { LibraryItem } from "../types/library";
 export function visibleInLibrary(item: LibraryItem, filter: string): boolean {
   if (item.hidden) return false;
 
-  if (filter === "epic") {
-    return item.provider === "epic" && item.owned;
+  if (["epic", "gog"].includes(filter)) {
+    return item.provider === filter && item.owned;
   }
 
   if (!item.installed) return false;

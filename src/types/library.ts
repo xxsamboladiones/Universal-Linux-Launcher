@@ -102,6 +102,14 @@ export interface ScanProgress {
 }
 export interface AppSettings {
   theme: "dark" | "system";
+  activeThemeId: string;
+  lastManualThemeId: string;
+  themeMode: "manual" | "automatic" | "system";
+  paletteSource: "automatic" | "pywal" | "native";
+  wallpaperInfluence: number;
+  automaticColorMode: "automatic" | "dark" | "light";
+  automaticUpdate: boolean;
+  manualWallpaperPath: string | null;
   scanOnStartup: boolean;
   confirmBeforeRemove: boolean;
   preferredTerminal: string | null;

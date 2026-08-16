@@ -1,8 +1,9 @@
+pub(crate) mod gog;
 mod phase3;
 
 use crate::database::Database;
 pub(crate) use phase3::parse_transfer_progress;
-pub use phase3::{CredentialVault, DependencyManager, ProviderManager};
+pub use phase3::{CredentialVault, DependencyManager, ProviderManager, GOG_LOGIN_URL};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -82,13 +83,6 @@ pub fn overview(root: &Path, db: &Database) -> PlatformOverview {
     let specs = [
         ("steamcmd", "SteamCMD", "steam", 192_000_000),
         ("legendary", "Legendary", "epic", 55_000_000),
-        ("wine-ge", "Wine-GE", "compatibility", 680_000_000),
-        (
-            "battlenet-client",
-            "Battle.net Client",
-            "battlenet",
-            500_000_000,
-        ),
         ("gogdl", "GOGDL", "gog", 30_000_000),
     ];
     let dependencies = specs
@@ -132,13 +126,6 @@ pub fn overview(root: &Path, db: &Database) -> PlatformOverview {
             "replacement",
             vec!["gogdl"],
         ),
-        (
-            "battlenet",
-            "Battle.net",
-            "Cliente oficial isolado em prefixo Wine gerenciado.",
-            "managed_client",
-            vec!["wine-ge", "battlenet-client"],
-        ),
     ]
     .into_iter()
     .map(|(id, name, description, strategy, deps)| {
@@ -148,7 +135,7 @@ pub fn overview(root: &Path, db: &Database) -> PlatformOverview {
             display_name: name.into(),
             description: description.into(),
             state: connection_state(ready, provider_connected(root, db, id)),
-            library_size: 0,
+            library_size: db.provider_item_count(id).unwrap_or_default(),
             dependency_ids: deps.into_iter().map(str::to_string).collect(),
             strategy: strategy.into(),
         }
@@ -178,6 +165,9 @@ fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     if provider == "steam" {
         return connected_provider_user(root, db, provider).is_some();
     }
+    if provider == "gog" {
+        return ProviderManager::new(root.to_path_buf()).gog_authenticated();
+    }
     if db
         .provider_account(provider)
         .ok()
@@ -188,8 +178,7 @@ fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     }
     match provider {
         "epic" => home.join(".config/legendary/user.json").is_file(),
-        "gog" => home.join(".config/heroic/gog_store/auth.json").is_file(),
-        "battlenet" => root.join("prefixes/battlenet").is_dir(),
+        "gog" => false,
         _ => false,
     }
 }

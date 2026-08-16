@@ -5,14 +5,56 @@ use std::collections::HashMap;
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     pub theme: String,
+    /// ID do tema declarativo ativo. `theme` permanece para desserializar
+    /// preferências gravadas por versões anteriores do Orbit.
+    #[serde(default = "default_active_theme_id")]
+    pub active_theme_id: String,
+    /// Último tema manual escolhido. Os modos automático e sistema nunca o substituem.
+    #[serde(default)]
+    pub last_manual_theme_id: String,
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
+    #[serde(default = "default_palette_source")]
+    pub palette_source: String,
+    #[serde(default = "default_wallpaper_influence")]
+    pub wallpaper_influence: u8,
+    #[serde(default = "default_color_mode")]
+    pub automatic_color_mode: String,
+    #[serde(default)]
+    pub automatic_update: bool,
+    #[serde(default)]
+    pub manual_wallpaper_path: Option<String>,
     pub scan_on_startup: bool,
     pub confirm_before_remove: bool,
     pub preferred_terminal: Option<String>,
+}
+fn default_active_theme_id() -> String {
+    "orbit-dark".into()
+}
+fn default_theme_mode() -> String {
+    "manual".into()
+}
+fn default_palette_source() -> String {
+    "automatic".into()
+}
+fn default_wallpaper_influence() -> u8 {
+    70
+}
+fn default_color_mode() -> String {
+    "automatic".into()
 }
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: "dark".into(),
+            active_theme_id: "orbit-dark".into(),
+            last_manual_theme_id: "orbit-dark".into(),
+            theme_mode: default_theme_mode(),
+            palette_source: default_palette_source(),
+            wallpaper_influence: default_wallpaper_influence(),
+            automatic_color_mode: default_color_mode(),
+            automatic_update: false,
+            manual_wallpaper_path: None,
             scan_on_startup: false,
             confirm_before_remove: true,
             preferred_terminal: Some("konsole".into()),

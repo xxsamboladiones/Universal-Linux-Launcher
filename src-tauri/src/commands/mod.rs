@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -12,6 +12,8 @@ use std::{
 
 use tauri::{AppHandle, Emitter, Manager, State, Window};
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
@@ -497,6 +499,11 @@ pub fn set_hidden(id: String, value: bool, state: State<AppState>) -> Result<()>
 
 #[tauri::command]
 pub fn delete_item(id: String, state: State<AppState>) -> Result<()> {
+    if state.process_manager.running().contains_key(&id) {
+        return Err(LauncherError::InvalidArguments(
+            "Feche o jogo ou aplicativo antes de removê-lo da biblioteca".into(),
+        ));
+    }
     state
         .database
         .lock()
@@ -565,6 +572,7 @@ pub async fn uninstall_item(id: String, app: AppHandle, state: State<'_, AppStat
         .ok_or_else(|| LauncherError::InvalidArguments("ID de item inválido".into()))?;
     let provider = item.provider.clone();
     let executable = item.executable.clone();
+    let working_directory = item.working_directory.clone();
     let database_path = data_dir.join("orbit.db");
     let id_for_worker = id.clone();
 
@@ -573,6 +581,7 @@ pub async fn uninstall_item(id: String, app: AppHandle, state: State<'_, AppStat
             &provider,
             &item_id,
             executable.as_deref(),
+            working_directory.as_deref(),
             steam_user.as_deref(),
             &data_dir,
         )?;
@@ -600,6 +609,7 @@ fn uninstall_provider_item(
     provider: &ProviderKind,
     item_id: &str,
     executable: Option<&str>,
+    working_directory: Option<&str>,
     steam_user: Option<&str>,
     data_dir: &Path,
 ) -> Result<bool> {
@@ -622,6 +632,27 @@ fn uninstall_provider_item(
                 .ok_or_else(|| LauncherError::ExecutableNotFound("steamcmd".into()))?;
             let mut command = std::process::Command::new(executable);
             command.args(steam_uninstall_arguments(user, item_id));
+            command
+        }
+        ProviderKind::Gog => {
+            platform::gog::validate_product_id(item_id)?;
+            let expected = platform::gog::install_path(data_dir, item_id)?;
+            let configured = working_directory.map(Path::new).ok_or_else(|| {
+                LauncherError::ProviderUnavailable(
+                    "A instalação GOG não possui um diretório gerenciado".into(),
+                )
+            })?;
+            if configured != expected
+                || std::fs::symlink_metadata(configured)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                || !configured.is_dir()
+            {
+                return Err(LauncherError::ProviderUnavailable(
+                    "O diretório da instalação GOG não é seguro para remoção".into(),
+                ));
+            }
+            let mut command = std::process::Command::new("gio");
+            command.arg("trash").arg(configured);
             command
         }
         ProviderKind::Flatpak => {
@@ -680,6 +711,11 @@ fn uninstall_provider_item(
     {
         return Err(LauncherError::ProviderUnavailable(
             "O SteamCMD terminou, mas o jogo continua registrado como instalado".into(),
+        ));
+    }
+    if *provider == ProviderKind::Gog && platform::gog::install_path(data_dir, item_id)?.exists() {
+        return Err(LauncherError::ProviderUnavailable(
+            "O diretório do jogo GOG não foi movido para a lixeira".into(),
         ));
     }
     if *provider == ProviderKind::Flatpak
@@ -743,12 +779,50 @@ pub fn get_settings(state: State<AppState>) -> Result<AppSettings> {
 }
 
 #[tauri::command]
-pub fn update_settings(settings: AppSettings, state: State<AppState>) -> Result<()> {
+pub fn update_settings(mut settings: AppSettings, state: State<AppState>) -> Result<()> {
+    if settings.palette_source == "pywal" {
+        settings.automatic_update = true;
+    }
+    if settings.last_manual_theme_id.is_empty() {
+        settings.last_manual_theme_id = settings.active_theme_id.clone();
+    }
+    validate_theme_settings(&settings)?;
     state
         .database
         .lock()
         .expect("database lock poisoned")
         .save_settings(&settings)
+}
+
+fn validate_theme_settings(settings: &AppSettings) -> Result<()> {
+    if !matches!(
+        settings.theme_mode.as_str(),
+        "manual" | "automatic" | "system"
+    ) {
+        return Err(LauncherError::InvalidTheme("modo de tema inválido".into()));
+    }
+    if !matches!(
+        settings.palette_source.as_str(),
+        "automatic" | "pywal" | "native"
+    ) {
+        return Err(LauncherError::InvalidTheme(
+            "fonte de paleta inválida".into(),
+        ));
+    }
+    if !matches!(
+        settings.automatic_color_mode.as_str(),
+        "automatic" | "dark" | "light"
+    ) {
+        return Err(LauncherError::InvalidTheme(
+            "modo de cor automático inválido".into(),
+        ));
+    }
+    if settings.wallpaper_influence > 100 {
+        return Err(LauncherError::InvalidTheme(
+            "a influência do wallpaper deve estar entre 0 e 100".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -862,7 +936,6 @@ pub async fn prepare_provider(
     let dependencies: &[&str] = match provider.as_str() {
         "steam" => &["steamcmd"],
         "epic" => &["legendary"],
-        "battlenet" => &["wine-ge", "battlenet-client"],
         "gog" => &["gogdl"],
         _ => return Err(LauncherError::ProviderUnavailable(provider)),
     };
@@ -913,6 +986,42 @@ pub async fn connect_provider(
         .then(|| args.get(1).cloned())
         .flatten();
     let steam_log_offset = steam_user.as_ref().map(|_| manager.steam_log_len());
+    if provider == "gog" {
+        let auth_path = manager.gog_auth_path();
+        if let Some(parent) = auth_path.parent() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(target_os = "linux")]
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+        tauri::async_runtime::spawn_blocking(move || run_gog_auth_command(command, args))
+            .await
+            .map_err(|error| LauncherError::LaunchFailed(error.to_string()))??;
+        #[cfg(target_os = "linux")]
+        if let Ok(metadata) = std::fs::symlink_metadata(&auth_path) {
+            if metadata.file_type().is_symlink() {
+                return Err(LauncherError::ProviderUnavailable(
+                    "O arquivo de autenticação do GOG não pode ser um link simbólico".into(),
+                ));
+            }
+            if metadata.is_file() {
+                std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+        let manager = platform::ProviderManager::new(data_dir);
+        if !manager.gog_authenticated() {
+            return Err(LauncherError::ProviderUnavailable(
+                "O GOGDL terminou sem salvar uma sessão válida. Repita o login e cole a URL final completa"
+                    .into(),
+            ));
+        }
+        state
+            .database
+            .lock()
+            .expect("database lock poisoned")
+            .upsert_provider_account("gog", "connected", None)?;
+        let _ = app.emit("provider-state-changed", &provider);
+        return Ok(());
+    }
     let settings = state
         .database
         .lock()
@@ -964,6 +1073,97 @@ pub async fn connect_provider(
     Ok(())
 }
 
+const GOG_AUTH_OUTPUT_LIMIT: u64 = 64 * 1024;
+const GOG_AUTH_TIMEOUT: Duration = Duration::from_secs(120);
+fn run_gog_auth_command(command: String, args: Vec<String>) -> Result<()> {
+    let mut stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
+    let mut process = std::process::Command::new(command);
+    process
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
+    clean_appimage_environment(&mut process);
+    #[cfg(target_os = "linux")]
+    process.process_group(0);
+    let mut child = process
+        .spawn()
+        .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?;
+    let deadline = Instant::now() + GOG_AUTH_TIMEOUT;
+    let status = loop {
+        if stdout.metadata()?.len() > GOG_AUTH_OUTPUT_LIMIT
+            || stderr.metadata()?.len() > GOG_AUTH_OUTPUT_LIMIT
+        {
+            terminate_store_process(&mut child);
+            let _ = child.wait();
+            return Err(LauncherError::ProviderUnavailable(
+                "A resposta de autenticação do GOG excedeu o limite de segurança".into(),
+            ));
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            terminate_store_process(&mut child);
+            let _ = child.wait();
+            return Err(LauncherError::ProviderUnavailable(
+                "A autenticação do GOG excedeu 2 minutos. Verifique sua conexão e tente novamente"
+                    .into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    if !status.success() {
+        return Err(LauncherError::ProviderUnavailable(
+            "O GOG recusou o código de autorização. Inicie um novo login e tente novamente".into(),
+        ));
+    }
+    stdout.seek(SeekFrom::Start(0))?;
+    let mut response = Vec::new();
+    stdout
+        .take(GOG_AUTH_OUTPUT_LIMIT + 1)
+        .read_to_end(&mut response)?;
+    if response.len() > GOG_AUTH_OUTPUT_LIMIT as usize {
+        return Err(LauncherError::ProviderUnavailable(
+            "A resposta de autenticação do GOG excedeu o limite de segurança".into(),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&response).map_err(|_| {
+        LauncherError::ProviderUnavailable(
+            "O GOGDL retornou uma resposta de autenticação inválida".into(),
+        )
+    })?;
+    if value
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(LauncherError::ProviderUnavailable(
+            "O GOGDL não retornou uma sessão autenticada".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_provider_login(provider: String) -> Result<()> {
+    if provider != "gog" {
+        return Err(LauncherError::ProviderUnavailable(provider));
+    }
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(platform::GOG_LOGIN_URL)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    clean_appimage_environment(&mut command);
+    command
+        .spawn()
+        .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?;
+    Ok(())
+}
+
 fn clean_appimage_environment(command: &mut std::process::Command) {
     for variable in [
         "LD_LIBRARY_PATH",
@@ -994,6 +1194,9 @@ pub fn queue_store_operation(
     if !["install", "update", "verify"].contains(&action.as_str()) {
         return Err(LauncherError::InvalidArguments(action));
     }
+    if !["steam", "epic", "gog"].contains(&provider.as_str()) {
+        return Err(LauncherError::ProviderUnavailable(provider));
+    }
     if provider == "steam"
         && platform::connected_provider_user(
             &state.data_dir,
@@ -1006,17 +1209,20 @@ pub fn queue_store_operation(
             "Conecte sua conta Steam antes de instalar jogos da biblioteca".into(),
         ));
     }
-    if provider == "epic" {
+    if matches!(provider.as_str(), "epic" | "gog") {
+        if provider == "gog" {
+            platform::gog::validate_product_id(&item_id)?;
+        }
         let item = state
             .database
             .lock()
             .expect("database lock poisoned")
-            .get(&format!("epic:{item_id}"))?
-            .ok_or_else(|| LauncherError::NotFound(format!("epic:{item_id}")))?;
+            .get(&format!("{provider}:{item_id}"))?
+            .ok_or_else(|| LauncherError::NotFound(format!("{provider}:{item_id}")))?;
         if !item.owned {
-            return Err(LauncherError::ProviderUnavailable(
-                "Este jogo não pertence à conta Epic conectada".into(),
-            ));
+            return Err(LauncherError::ProviderUnavailable(format!(
+                "Este jogo não pertence à conta {provider} conectada"
+            )));
         }
     }
     let operation = platform::ProviderManager::operation(&provider, &item_id, &action);
@@ -1115,30 +1321,30 @@ fn run_store_operation(
                 )
             })
         }),
-        "gog" => manager.executable("gogdl").map(|exe| {
-            (
+        "gog" => manager.executable("gogdl").and_then(|exe| {
+            let database = Database::open(&db_path).ok()?;
+            let item = database.get(&format!("gog:{}", operation.item_id)).ok()??;
+            let platform = platform::gog::platform_from_item(&item);
+            let auth_path =
+                platform::ProviderManager::new(data.clone()).gog_effective_auth_path()?;
+            Some((
                 exe,
-                vec![
-                    "download".into(),
-                    operation.item_id.clone(),
-                    "--path".into(),
-                    data.join("games/gog").to_string_lossy().into_owned(),
-                ],
-            )
+                gog_store_arguments(
+                    &operation.item_id,
+                    &operation.action,
+                    &data,
+                    &auth_path,
+                    platform,
+                )
+                .ok()?,
+            ))
         }),
-        "battlenet" => Some((
-            manager
-                .executable("wine-ge")
-                .unwrap_or_else(|| PathBuf::from("wine")),
-            vec![data
-                .join("providers/battlenet/Battle.net-Setup.exe")
-                .to_string_lossy()
-                .into_owned()],
-        )),
         _ => None,
     };
     let missing_command = if operation.provider == "steam" && steam_user.is_none() {
         "Conta Steam não conectada; conecte novamente antes de instalar".to_string()
+    } else if operation.provider == "gog" {
+        "Conta GOG não conectada; conecte novamente antes de instalar".to_string()
     } else {
         "Componente do provider não instalado".to_string()
     };
@@ -1156,12 +1362,10 @@ fn run_store_operation(
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            clean_appimage_environment(&mut process);
-            if operation.provider == "battlenet" {
-                let prefix = data.join("prefixes/battlenet");
-                let _ = std::fs::create_dir_all(&prefix);
-                process.env("WINEPREFIX", prefix);
+            if operation.provider == "gog" {
+                process.env("GOGDL_CONFIG_PATH", data.join("providers/gogdl-config"));
             }
+            clean_appimage_environment(&mut process);
             #[cfg(target_os = "linux")]
             process.process_group(0);
             if cancellation.is_cancelled() {
@@ -1237,19 +1441,29 @@ fn run_store_operation(
                 Err(provider_error.unwrap_or_else(|| format!("Processo terminou com {status}")))
             }
         });
-    let mut epic_installation = None;
+    let mut provider_installation = None;
     let result = result.and_then(|()| {
-        if operation.provider != "epic" || operation.action == "verify" {
+        if !matches!(operation.provider.as_str(), "epic" | "gog") || operation.action == "verify" {
             return Ok(());
         }
-        match confirm_legendary_installation(&data, &operation.item_id) {
+        let confirmed = if operation.provider == "epic" {
+            confirm_legendary_installation(&data, &operation.item_id)
+        } else {
+            confirm_gog_installation(&db_path, &data, &operation.item_id)
+        };
+        match confirmed {
             Ok(Some(path)) => {
-                epic_installation = Some(path);
+                provider_installation = Some(path);
                 Ok(())
             }
-            Ok(None) => {
-                Err("O Legendary terminou sem confirmar a instalação local do jogo".to_string())
-            }
+            Ok(None) => Err(format!(
+                "O {} terminou sem confirmar a instalação local do jogo",
+                if operation.provider == "epic" {
+                    "Legendary"
+                } else {
+                    "GOGDL"
+                }
+            )),
             Err(error) => Err(error.to_string()),
         }
     });
@@ -1281,9 +1495,12 @@ fn run_store_operation(
     };
     transfer_manager.finish(&operation.id);
     if let Some(finished) = finished {
-        if finished.state == "completed" && operation.provider == "epic" {
-            let item_id = format!("epic:{}", operation.item_id);
-            match epic_installation.as_deref().map_or(Ok(false), |path| {
+        if finished.state == "completed"
+            && matches!(operation.provider.as_str(), "epic" | "gog")
+            && operation.action != "verify"
+        {
+            let item_id = format!("{}:{}", operation.provider, operation.item_id);
+            match provider_installation.as_deref().map_or(Ok(false), |path| {
                 progress_database.set_installation(&item_id, path)
             }) {
                 Ok(true) => {
@@ -1291,7 +1508,7 @@ fn run_store_operation(
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    tracing::warn!(%error, item=%item_id, "não foi possível atualizar a instalação Epic");
+                    tracing::warn!(%error, item=%item_id, "não foi possível atualizar a instalação do provider");
                 }
             }
         }
@@ -1416,6 +1633,35 @@ fn epic_store_arguments(item_id: &str, action: &str, data_dir: &Path) -> Vec<Str
     arguments
 }
 
+fn gog_store_arguments(
+    item_id: &str,
+    action: &str,
+    data_dir: &Path,
+    auth_path: &Path,
+    platform: &str,
+) -> Result<Vec<String>> {
+    let install_path = platform::gog::install_path(data_dir, item_id)?;
+    // GOGDL's `download` always appends the manifest's display folder.
+    // `update` uses the same download engine without that append and supports
+    // a first install, keeping every game in `<gog>/<product-id>`.
+    let command = if action == "verify" {
+        "repair"
+    } else {
+        "update"
+    };
+    Ok(vec![
+        "--auth-config-path".into(),
+        auth_path.to_string_lossy().into_owned(),
+        command.into(),
+        item_id.into(),
+        "--path".into(),
+        install_path.to_string_lossy().into_owned(),
+        "--platform".into(),
+        platform.into(),
+        "--skip-dlcs".into(),
+    ])
+}
+
 fn confirm_legendary_installation(data_dir: &Path, item_id: &str) -> Result<Option<PathBuf>> {
     let executable = platform::DependencyManager::new(data_dir.to_path_buf())
         .executable("legendary")
@@ -1432,6 +1678,21 @@ fn confirm_legendary_installation(data_dir: &Path, item_id: &str) -> Result<Opti
         .remove(item_id)
         .map(|game| game.install_path)
         .filter(|path| path.is_dir()))
+}
+
+fn confirm_gog_installation(
+    database_path: &Path,
+    data_dir: &Path,
+    item_id: &str,
+) -> Result<Option<PathBuf>> {
+    platform::gog::validate_product_id(item_id)?;
+    let database = Database::open(database_path)?;
+    let item = database
+        .get(&format!("gog:{item_id}"))?
+        .ok_or_else(|| LauncherError::NotFound(format!("gog:{item_id}")))?;
+    let platform = platform::gog::platform_from_item(&item);
+    let path = platform::gog::install_path(data_dir, item_id)?;
+    Ok(platform::gog::valid_installation(&path, item_id, platform).then_some(path))
 }
 
 fn provider_operation_error(provider: &str, output: &str) -> Option<String> {
@@ -1454,6 +1715,19 @@ fn provider_operation_error(provider: &str, output: &str) -> Option<String> {
             || normalized.contains("could not find")
         {
             return Some("O Legendary não conseguiu concluir a instalação do jogo".into());
+        }
+    }
+    if provider == "gog" {
+        let normalized = output.to_ascii_lowercase();
+        if normalized.contains("doesn't own") || normalized.contains("not owned") {
+            return Some("A conta GOG conectada não possui este jogo".into());
+        }
+        if normalized.contains("no build found")
+            || normalized.contains("failed to get")
+            || normalized.contains("download failed")
+            || normalized.contains("traceback")
+        {
+            return Some("O GOGDL não conseguiu concluir a instalação do jogo".into());
         }
     }
     None
@@ -1585,6 +1859,7 @@ pub fn remove_store_operation(id: String, app: AppHandle, state: State<AppState>
 const STORE_LIBRARY_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 const STORE_LIBRARY_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 const STORE_LIBRARY_ERROR_LIMIT: usize = 256 * 1024;
+const GOG_METADATA_OUTPUT_LIMIT: u64 = 1024 * 1024;
 
 #[derive(Debug, serde::Deserialize)]
 struct LegendaryLibraryEntry {
@@ -1629,16 +1904,34 @@ struct LegendaryKeyImage {
 
 #[tauri::command]
 pub async fn sync_store_library(provider: String, state: State<'_, AppState>) -> Result<usize> {
-    if provider != "epic" {
+    if !matches!(provider.as_str(), "epic" | "gog") {
         return Err(LauncherError::ProviderUnavailable(format!(
             "Sincronização do catálogo {provider} ainda não está disponível"
         )));
     }
     let sync_guard = state.library_sync_manager.begin(&provider)?;
     let data_dir = state.data_dir.clone();
+    let dependency = if provider == "epic" {
+        "legendary"
+    } else {
+        "gogdl"
+    };
     let executable = platform::DependencyManager::new(data_dir.clone())
-        .executable("legendary")
-        .ok_or_else(|| LauncherError::ExecutableNotFound("legendary".into()))?;
+        .executable(dependency)
+        .ok_or_else(|| LauncherError::ExecutableNotFound(dependency.into()))?;
+    let gog_auth_path = if provider == "gog" {
+        Some(
+            platform::ProviderManager::new(data_dir.clone())
+                .gog_effective_auth_path()
+                .ok_or_else(|| {
+                    LauncherError::ProviderUnavailable(
+                        "Conecte sua conta GOG antes de sincronizar a biblioteca".into(),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
     let database_path = data_dir.join("orbit.db");
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -1647,6 +1940,15 @@ pub async fn sync_store_library(provider: String, state: State<'_, AppState>) ->
         // from contending for the same metadata cache.
         let sync_control = sync_guard.control.clone();
         let _sync_guard = sync_guard;
+        if provider == "gog" {
+            return sync_gog_library(
+                &data_dir,
+                &database_path,
+                &executable,
+                gog_auth_path.as_deref().expect("GOG auth path checked"),
+                &sync_control,
+            );
+        }
         let catalog_output = run_legendary_json_command(
             &executable,
             &["list", "--json"],
@@ -1680,14 +1982,235 @@ pub async fn sync_store_library(provider: String, state: State<'_, AppState>) ->
     .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?
 }
 
+fn sync_gog_library(
+    data_dir: &Path,
+    database_path: &Path,
+    executable: &Path,
+    auth_path: &Path,
+    control: &LibrarySyncControl,
+) -> Result<usize> {
+    let auth_path_string = auth_path.to_string_lossy().into_owned();
+    let credentials_output = run_provider_json_command(
+        executable,
+        &["--auth-config-path", &auth_path_string, "auth"],
+        Duration::from_secs(45),
+        control,
+        "GOGDL",
+        "sessão GOG",
+        Some(("GOGDL_CONFIG_PATH", data_dir.join("providers/gogdl-config"))),
+    )?;
+    let credentials = platform::gog::parse_credentials(&credentials_output)?;
+    let owned_output = run_gog_authenticated_request(
+        "https://embed.gog.com/user/data/games",
+        &credentials.access_token,
+        control,
+    )?;
+    let product_ids = platform::gog::parse_owned_game_ids(&owned_output)?;
+    let count = product_ids.len();
+    let metadata_dir = tempfile::tempdir()?;
+    download_gog_gamesdb_metadata(&product_ids, metadata_dir.path(), control)?;
+
+    let mut items = Vec::with_capacity(count);
+    for product_id in product_ids {
+        let metadata_path = metadata_dir.path().join(format!("{product_id}.json"));
+        let metadata = read_bounded_file(&metadata_path, GOG_METADATA_OUTPUT_LIMIT).ok();
+        if metadata
+            .as_deref()
+            .is_some_and(|metadata| !platform::gog::is_installable_metadata(metadata))
+        {
+            continue;
+        }
+        items.push(platform::gog::catalog_item(
+            &product_id,
+            metadata.as_deref(),
+            executable,
+            auth_path,
+            data_dir,
+        )?);
+    }
+
+    let mut database = Database::open(database_path)?;
+    if count == 0 && database.provider_item_count("gog")? > 0 {
+        return Err(LauncherError::ProviderUnavailable(
+            "O GOG retornou uma biblioteca vazia inesperadamente; o catálogo anterior foi preservado"
+                .into(),
+        ));
+    }
+    database.apply_provider_scan("gog", &items)?;
+    Ok(items.len())
+}
+
+fn run_gog_authenticated_request(
+    url: &str,
+    access_token: &str,
+    control: &LibrarySyncControl,
+) -> Result<Vec<u8>> {
+    if url != "https://embed.gog.com/user/data/games" {
+        return Err(LauncherError::InvalidArguments(
+            "Endpoint GOG não permitido".into(),
+        ));
+    }
+    let mut stdout = tempfile::tempfile()?;
+    let mut stderr = tempfile::tempfile()?;
+    let mut command = std::process::Command::new("curl");
+    command
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "45",
+            "--config",
+            "-",
+            url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
+    clean_appimage_environment(&mut command);
+    #[cfg(target_os = "linux")]
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|error| {
+        LauncherError::ProviderUnavailable(format!(
+            "O curl é necessário para sincronizar a biblioteca GOG: {error}"
+        ))
+    })?;
+    control.register_process(child.id());
+    let header = format!("header = \"Authorization: Bearer {access_token}\"\n");
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| LauncherError::LaunchFailed("stdin do curl indisponível".into()))?
+        .write_all(header.as_bytes())?;
+    let status = wait_library_process(
+        &mut child,
+        &stdout,
+        &stderr,
+        Duration::from_secs(50),
+        control,
+        "GOG",
+    )?;
+    if !status.success() {
+        let _ = read_temporary_output(&mut stderr, STORE_LIBRARY_ERROR_LIMIT, "erro do GOG")?;
+        return Err(LauncherError::ProviderUnavailable(
+            "O GOG não conseguiu consultar a biblioteca. Verifique sua conexão ou conecte a conta novamente"
+                .into(),
+        ));
+    }
+    read_temporary_output(&mut stdout, STORE_LIBRARY_OUTPUT_LIMIT, "biblioteca GOG")
+}
+
+fn download_gog_gamesdb_metadata(
+    product_ids: &[String],
+    output_dir: &Path,
+    control: &LibrarySyncControl,
+) -> Result<()> {
+    for batch in product_ids.chunks(250) {
+        if control.is_cancelled() {
+            return Err(LauncherError::ProviderUnavailable(
+                "A sincronização do GOG foi encerrada".into(),
+            ));
+        }
+        let stderr = tempfile::tempfile()?;
+        let mut command = std::process::Command::new("curl");
+        command.args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "45",
+            "--max-filesize",
+            "1048576",
+            "--parallel",
+            "--parallel-max",
+            "8",
+        ]);
+        for product_id in batch {
+            platform::gog::validate_product_id(product_id)?;
+            command
+                .arg("--url")
+                .arg(format!(
+                    "https://gamesdb.gog.com/platforms/gog/external_releases/{product_id}"
+                ))
+                .arg("--output")
+                .arg(output_dir.join(format!("{product_id}.json")));
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr.try_clone()?));
+        clean_appimage_environment(&mut command);
+        #[cfg(target_os = "linux")]
+        command.process_group(0);
+        let mut child = command.spawn().map_err(|error| {
+            LauncherError::ProviderUnavailable(format!(
+                "O curl é necessário para obter os metadados GOG: {error}"
+            ))
+        })?;
+        control.register_process(child.id());
+        let empty_stdout = tempfile::tempfile()?;
+        // A falha de um produto não elimina a biblioteca inteira. Os arquivos
+        // válidos são usados e os demais recebem título/arte de fallback.
+        let _ = wait_library_process(
+            &mut child,
+            &empty_stdout,
+            &stderr,
+            STORE_LIBRARY_SYNC_TIMEOUT,
+            control,
+            "GOG",
+        )?;
+    }
+    Ok(())
+}
+
+fn read_bounded_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > limit {
+        return Err(LauncherError::ProviderUnavailable(
+            "Um metadado de produto GOG excedeu o limite de segurança".into(),
+        ));
+    }
+    let mut output = Vec::new();
+    file.take(limit + 1).read_to_end(&mut output)?;
+    if output.len() as u64 > limit {
+        return Err(LauncherError::ProviderUnavailable(
+            "Um metadado de produto GOG excedeu o limite de segurança".into(),
+        ));
+    }
+    Ok(output)
+}
+
 fn run_legendary_json_command(
     executable: &Path,
     arguments: &[&str],
     timeout: Duration,
     control: &LibrarySyncControl,
 ) -> Result<Vec<u8>> {
-    // Files avoid pipe backpressure when a large account returns many games.
-    // They are unlinked automatically and read only after Legendary exits.
+    run_provider_json_command(
+        executable,
+        arguments,
+        timeout,
+        control,
+        "Legendary",
+        "biblioteca Epic",
+        None,
+    )
+}
+
+fn run_provider_json_command(
+    executable: &Path,
+    arguments: &[&str],
+    timeout: Duration,
+    control: &LibrarySyncControl,
+    provider: &str,
+    description: &str,
+    environment: Option<(&str, PathBuf)>,
+) -> Result<Vec<u8>> {
+    // Temporary files avoid pipe backpressure for large provider catalogs.
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
     let mut command = std::process::Command::new(executable);
@@ -1696,6 +2219,10 @@ fn run_legendary_json_command(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?));
+    if let Some((name, value)) = environment {
+        std::fs::create_dir_all(&value)?;
+        command.env(name, value);
+    }
     clean_appimage_environment(&mut command);
     #[cfg(target_os = "linux")]
     command.process_group(0);
@@ -1703,80 +2230,91 @@ fn run_legendary_json_command(
         .spawn()
         .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?;
     control.register_process(child.id());
+    let status = wait_library_process(&mut child, &stdout, &stderr, timeout, control, provider)?;
+
+    if !status.success() {
+        let error = read_temporary_output(
+            &mut stderr,
+            STORE_LIBRARY_ERROR_LIMIT,
+            &format!("erro do {provider}"),
+        )?;
+        let message = String::from_utf8_lossy(&error).to_ascii_lowercase();
+        let authentication_error = message.contains("not logged")
+            || message.contains("no saved credentials")
+            || message.contains("authentication");
+        let detail = if provider == "Legendary" && authentication_error {
+            "A sessão Epic expirou. Conecte a conta novamente e repita a sincronização".into()
+        } else if provider == "GOGDL" && authentication_error {
+            "A sessão GOG expirou. Conecte a conta novamente e repita a sincronização".into()
+        } else {
+            format!(
+                "O {provider} não conseguiu consultar os dados. Verifique sua conexão e tente novamente"
+            )
+        };
+        return Err(LauncherError::ProviderUnavailable(detail));
+    }
+
+    read_temporary_output(&mut stdout, STORE_LIBRARY_OUTPUT_LIMIT, description)
+}
+
+fn wait_library_process(
+    child: &mut std::process::Child,
+    stdout: &std::fs::File,
+    stderr: &std::fs::File,
+    timeout: Duration,
+    control: &LibrarySyncControl,
+    provider: &str,
+) -> Result<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        let exceeds_limit = match temporary_output_exceeds_limit(&stdout, &stderr) {
+    loop {
+        let exceeds_limit = match temporary_output_exceeds_limit(stdout, stderr) {
             Ok(exceeds_limit) => exceeds_limit,
             Err(error) => {
-                terminate_store_process(&mut child);
+                terminate_store_process(child);
                 let _ = child.wait();
                 control.clear_process();
                 return Err(error);
             }
         };
         if exceeds_limit {
-            terminate_store_process(&mut child);
+            terminate_store_process(child);
             let _ = child.wait();
             control.clear_process();
-            return Err(LauncherError::ProviderUnavailable(
-                "A saída do Legendary excedeu o limite de segurança".into(),
-            ));
+            return Err(LauncherError::ProviderUnavailable(format!(
+                "A saída do {provider} excedeu o limite de segurança"
+            )));
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                if temporary_output_exceeds_limit(&stdout, &stderr)? {
-                    control.clear_process();
-                    return Err(LauncherError::ProviderUnavailable(
-                        "A saída do Legendary excedeu o limite de segurança".into(),
-                    ));
-                }
-                break status;
+                control.clear_process();
+                return Ok(status);
             }
             Ok(None) => {}
             Err(error) => {
-                terminate_store_process(&mut child);
+                terminate_store_process(child);
                 let _ = child.wait();
                 control.clear_process();
                 return Err(error.into());
             }
         }
         if control.is_cancelled() {
-            terminate_store_process(&mut child);
+            terminate_store_process(child);
             let _ = child.wait();
             control.clear_process();
-            return Err(LauncherError::ProviderUnavailable(
-                "A sincronização da Epic foi encerrada".into(),
-            ));
+            return Err(LauncherError::ProviderUnavailable(format!(
+                "A sincronização do {provider} foi encerrada"
+            )));
         }
         if Instant::now() >= deadline {
-            terminate_store_process(&mut child);
+            terminate_store_process(child);
             let _ = child.wait();
             control.clear_process();
-            return Err(LauncherError::ProviderUnavailable(
-                "A sincronização da Epic excedeu 2 minutos e foi encerrada. Verifique sua conexão"
-                    .into(),
-            ));
+            return Err(LauncherError::ProviderUnavailable(format!(
+                "A sincronização do {provider} excedeu o limite de tempo. Verifique sua conexão"
+            )));
         }
         std::thread::sleep(Duration::from_millis(25));
-    };
-    control.clear_process();
-
-    if !status.success() {
-        let error =
-            read_temporary_output(&mut stderr, STORE_LIBRARY_ERROR_LIMIT, "erro do Legendary")?;
-        let message = String::from_utf8_lossy(&error).to_ascii_lowercase();
-        let detail = if message.contains("not logged")
-            || message.contains("no saved credentials")
-            || message.contains("authentication")
-        {
-            "A sessão Epic expirou. Conecte a conta novamente e repita a sincronização"
-        } else {
-            "O Legendary não conseguiu consultar a biblioteca. Verifique sua conexão e tente novamente"
-        };
-        return Err(LauncherError::ProviderUnavailable(detail.into()));
     }
-
-    read_temporary_output(&mut stdout, STORE_LIBRARY_OUTPUT_LIMIT, "biblioteca Epic")
 }
 
 fn read_temporary_output(
@@ -2055,10 +2593,11 @@ mod tests {
     use std::{sync::atomic::Ordering, time::Duration};
 
     use super::{
-        collect_process_chunks, epic_store_arguments, load_library_with_icons,
+        collect_process_chunks, epic_store_arguments, gog_store_arguments, load_library_with_icons,
         merge_legendary_installations, parse_legendary_installed, parse_legendary_library,
-        provider_operation_error, run_legendary_json_command, steam_store_arguments,
-        steam_uninstall_arguments, terminate_store_process, LibrarySyncManager, TransferManager,
+        provider_operation_error, run_gog_auth_command, run_legendary_json_command,
+        steam_store_arguments, steam_uninstall_arguments, terminate_store_process,
+        LibrarySyncManager, TransferManager,
     };
     use crate::{
         core::model::{ItemKind, LibraryItem, ProviderKind},
@@ -2166,6 +2705,21 @@ mod tests {
     }
 
     #[test]
+    fn gog_auth_runner_rejects_null_and_accepts_a_token_response() {
+        assert!(
+            run_gog_auth_command("sh".into(), vec!["-c".into(), "printf null".into()]).is_err()
+        );
+        assert!(run_gog_auth_command(
+            "sh".into(),
+            vec![
+                "-c".into(),
+                "printf '{\"access_token\":\"test-token\"}'".into()
+            ]
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn steam_updates_do_not_request_a_new_license() {
         let arguments = steam_store_arguments("orbit_user", "645630", "update");
         assert!(!arguments
@@ -2204,6 +2758,55 @@ mod tests {
             epic_store_arguments("GameId", "verify", std::path::Path::new("/orbit")),
             ["verify", "GameId"]
         );
+    }
+
+    #[test]
+    fn gog_install_uses_a_deterministic_non_interactive_directory() {
+        let arguments = gog_store_arguments(
+            "1207658997",
+            "install",
+            std::path::Path::new("/orbit"),
+            std::path::Path::new("/orbit/providers/gog/auth.json"),
+            "windows",
+        )
+        .unwrap();
+        assert_eq!(
+            arguments,
+            [
+                "--auth-config-path",
+                "/orbit/providers/gog/auth.json",
+                "update",
+                "1207658997",
+                "--path",
+                "/orbit/games/gog/1207658997",
+                "--platform",
+                "windows",
+                "--skip-dlcs"
+            ]
+        );
+    }
+
+    #[test]
+    fn gog_verify_uses_repair_and_rejects_unsafe_ids() {
+        assert_eq!(
+            gog_store_arguments(
+                "42",
+                "verify",
+                std::path::Path::new("/orbit"),
+                std::path::Path::new("/orbit/auth.json"),
+                "linux",
+            )
+            .unwrap()[2],
+            "repair"
+        );
+        assert!(gog_store_arguments(
+            "../42",
+            "install",
+            std::path::Path::new("/orbit"),
+            std::path::Path::new("/orbit/auth.json"),
+            "windows",
+        )
+        .is_err());
     }
 
     #[test]

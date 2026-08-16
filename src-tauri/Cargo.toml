@@ -1,6 +1,6 @@
 [package]
 name = "orbit-launcher"
-version = "0.1.2"
+version = "0.1.3"
 description = "Universal Linux game and application launcher"
 authors = ["Orbit Contributors"]
 edition = "2021"
@@ -27,6 +27,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ico = "0.5"
 sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+semver = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+notify = "7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", features = ["v3_24"] }

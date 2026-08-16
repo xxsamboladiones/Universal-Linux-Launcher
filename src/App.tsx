@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Grid2X2, List, Plus, RefreshCw, Search } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
@@ -7,12 +7,13 @@ import { AddItemModal } from "./components/AddItemModal";
 import { PlatformsPage } from "./components/PlatformsPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { useLibrary } from "./stores/library";
+import { usePlatform } from "./stores/platform";
 import type { LibraryItem } from "./types/library";
 import type { ScanProgress } from "./types/library";
-import type { AppSettings } from "./types/library";
 import type { TransferOperation } from "./types/platform";
-import { backend } from "./services/backend";
 import { visibleInLibrary } from "./services/library-filter";
+import { useThemeBootstrap } from "./features/themes/hooks/useThemeBootstrap";
+import { useThemeStore } from "./features/themes/stores/theme";
 import "./styles.css";
 import "./platform.css";
 import "./modal.css";
@@ -22,36 +23,44 @@ import "./general-settings.css";
 import "./file-picker.css";
 import "./phase2.css";
 import "./controls.css";
+import "./features/themes/theme.css";
 export default function App() {
+  useThemeBootstrap();
   const s = useLibrary();
   const { load, scan, setFilter, refreshRunning, setProgress, applyTransfer } =
     s;
+  const syncStoreLibrary = usePlatform((state) => state.syncLibrary);
+  const storeSyncing = usePlatform((state) => state.syncing);
+  const storeError = usePlatform((state) => state.error);
+  const storeNotice = usePlatform((state) => state.notice);
   const [adding, setAdding] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [editing, setEditing] = useState<LibraryItem | null>(null);
-  const [settings, setSettings] = useState<AppSettings>({
-    theme: "dark",
-    scanOnStartup: false,
-    confirmBeforeRemove: true,
-    preferredTerminal: "konsole",
-  });
+  const settings = useThemeStore((state) => state.settings);
+  const settingsLoaded = useThemeStore((state) => state.loaded);
+  const saveSettings = useThemeStore((state) => state.updateSettings);
   const input = useRef<HTMLInputElement>(null);
-  const startupConfigured = useRef(false);
+  const startupScanHandled = useRef(false);
+  const activeStore =
+    s.filter === "epic" || s.filter === "gog" ? s.filter : null;
+  const refreshing = activeStore
+    ? Boolean(storeSyncing[activeStore])
+    : s.loading;
+  const refreshLibrary = useCallback(async () => {
+    if (activeStore) {
+      await syncStoreLibrary(activeStore);
+      return;
+    }
+    await scan();
+  }, [activeStore, scan, syncStoreLibrary]);
   useEffect(() => {
-    if (startupConfigured.current) return;
-    startupConfigured.current = true;
     void load();
-    void backend.settings().then((value) => {
-      setSettings(value);
-      document.documentElement.dataset.theme = value.theme;
-      if (value.scanOnStartup) void scan();
-    });
-  }, [load, scan]);
-  const saveSettings = async (value: AppSettings) => {
-    setSettings(value);
-    document.documentElement.dataset.theme = value.theme;
-    await backend.updateSettings(value);
-  };
+  }, [load]);
+  useEffect(() => {
+    if (!settingsLoaded || startupScanHandled.current) return;
+    startupScanHandled.current = true;
+    if (settings.scanOnStartup) void scan();
+  }, [scan, settings.scanOnStartup, settingsLoaded]);
   useEffect(() => {
     const unlisten = listen<ScanProgress>("scan-progress", (event) =>
       setProgress(event.payload),
@@ -81,7 +90,7 @@ export default function App() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r") {
         e.preventDefault();
-        void scan();
+        void refreshLibrary();
       }
       if ((e.ctrlKey || e.metaKey) && e.key === ",") {
         e.preventDefault();
@@ -91,11 +100,13 @@ export default function App() {
     };
     addEventListener("keydown", fn);
     return () => removeEventListener("keydown", fn);
-  }, [scan, setFilter]);
+  }, [refreshLibrary, setFilter]);
   const filteredItems = useMemo(
     () => s.items.filter((item) => visibleInLibrary(item, s.filter)),
     [s.items, s.filter],
   );
+  const storeCatalog = ["epic", "gog"].includes(s.filter);
+  const storeName = s.filter === "gog" ? "GOG" : "Epic Games";
   const items = useMemo(
     () =>
       filteredItems
@@ -105,17 +116,16 @@ export default function App() {
             .includes(s.query.toLowerCase()),
         )
         .sort((left, right) =>
-          s.filter === "epic"
+          ["epic", "gog"].includes(s.filter)
             ? Number(right.installed) - Number(left.installed) ||
               left.name.localeCompare(right.name, "pt-BR")
             : 0,
         ),
     [filteredItems, s.filter, s.query],
   );
-  const epicInstalled =
-    s.filter === "epic"
-      ? filteredItems.filter((item) => item.installed).length
-      : 0;
+  const storeInstalled = storeCatalog
+    ? filteredItems.filter((item) => item.installed).length
+    : 0;
   const restore = async (item: LibraryItem) => {
     setRestoring(item.id);
     try {
@@ -141,11 +151,15 @@ export default function App() {
           </div>
           <button
             className="icon"
-            disabled={s.loading}
-            onClick={() => void scan()}
-            title="Atualizar biblioteca"
+            disabled={refreshing}
+            onClick={() => void refreshLibrary()}
+            title={
+              activeStore
+                ? `Sincronizar biblioteca ${activeStore === "gog" ? "GOG" : "Epic Games"}`
+                : "Atualizar biblioteca"
+            }
           >
-            <RefreshCw className={s.loading ? "spin" : ""} size={19} />
+            <RefreshCw className={refreshing ? "spin" : ""} size={19} />
           </button>
           <button className="primary" onClick={() => setAdding(true)}>
             <Plus size={18} />
@@ -153,6 +167,9 @@ export default function App() {
           </button>
         </header>
         {s.error && <div className="global-error">{s.error}</div>}
+        {activeStore && storeError && (
+          <div className="global-error">{storeError}</div>
+        )}
         {s.filter === "platforms" ? (
           <PlatformsPage />
         ) : s.filter === "settings" ? (
@@ -166,17 +183,21 @@ export default function App() {
         ) : (
           <>
             <div className="hero">
-              <p>{s.filter === "epic" ? "SUA CONTA EPIC" : "SUA BIBLIOTECA"}</p>
+              <p>
+                {storeCatalog
+                  ? `SUA CONTA ${s.filter.toUpperCase()}`
+                  : "SUA BIBLIOTECA"}
+              </p>
               <h1>
                 {s.filter === "home"
                   ? "Olá, pronto para jogar?"
-                  : s.filter === "epic"
-                    ? "Epic Games"
+                  : storeCatalog
+                    ? storeName
                     : "Biblioteca"}
               </h1>
               <span>
-                {s.filter === "epic"
-                  ? `${filteredItems.length} jogos na conta · ${epicInstalled} instalados`
+                {storeCatalog
+                  ? `${filteredItems.length} jogos na conta · ${storeInstalled} instalados`
                   : `${items.length} itens disponíveis no seu universo`}
               </span>
             </div>
@@ -196,14 +217,19 @@ export default function App() {
                 </button>
               </div>
               <span>
-                {s.loading
-                  ? s.progress
-                    ? `${s.progress.provider}: ${s.progress.status === "scanning" ? "escaneando" : `${s.progress.found} encontrados`}`
-                    : "Escaneando…"
+                {refreshing
+                  ? activeStore
+                    ? "Sincronizando…"
+                    : s.progress
+                      ? `${s.progress.provider}: ${s.progress.status === "scanning" ? "escaneando" : `${s.progress.found} encontrados`}`
+                      : "Escaneando…"
                   : `${items.length} itens`}
               </span>
             </div>
-            {s.report && (
+            {activeStore && storeNotice && (
+              <div className="report">{storeNotice}</div>
+            )}
+            {!activeStore && s.report && (
               <div className="report">
                 Descoberta concluída: {s.report.added} novos, {s.report.updated}{" "}
                 atualizados.
@@ -248,8 +274,8 @@ export default function App() {
                 <Gamepad2 />
                 <h2>Sua órbita está vazia</h2>
                 <p>
-                  {s.filter === "epic"
-                    ? "Conecte sua conta e sincronize a biblioteca da Epic Games."
+                  {storeCatalog
+                    ? `Conecte sua conta e sincronize a biblioteca ${s.filter === "epic" ? "da Epic Games" : "do GOG"}.`
                     : "Atualize a biblioteca para encontrar Steam e aplicativos do sistema."}
                 </p>
               </div>
