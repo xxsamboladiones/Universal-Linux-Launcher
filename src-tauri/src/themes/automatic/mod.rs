@@ -2,11 +2,13 @@ mod cache;
 mod palette;
 mod providers;
 mod wallpaper;
+mod watcher;
 use crate::{error::Result, themes::manifest::ThemeTokens};
 pub use palette::ColorPalette;
 pub use providers::ProviderStatus;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+pub use watcher::PywalWatcher;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutomaticTheme {

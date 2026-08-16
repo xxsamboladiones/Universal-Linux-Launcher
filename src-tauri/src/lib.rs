@@ -51,6 +51,11 @@ pub fn run() {
                 library_sync_manager: commands::LibrarySyncManager::default(),
                 data_dir: data,
             });
+            if let Ok(watcher) = themes::automatic::PywalWatcher::install(app.handle().clone()) {
+                app.manage(watcher);
+            } else {
+                tracing::debug!("watcher Pywal indisponível; atualizações continuarão manuais");
+            }
             if let (Some(window), Some(icon)) =
                 (app.get_webview_window("main"), app.default_window_icon())
             {
