@@ -221,7 +221,7 @@ export function PlatformsPage() {
         ))}
       </section>
       <div className="section-title"><div><p>FILA TRANSACIONAL</p><h2>Instalações e atualizações</h2></div><Download size={22}/></div>
-      <div className="operation-create"><select value={operationProvider} onChange={event=>setOperationProvider(event.target.value as StoreId)}><option value="epic">Epic</option><option value="steam">SteamCMD</option><option value="gog">GOG</option><option value="battlenet">Battle.net</option></select><input value={operationItem} onChange={event=>setOperationItem(event.target.value)} placeholder="AppID ou identificador do jogo"/><button disabled={!operationItem.trim()} onClick={()=>void backend.queueStoreOperation(operationProvider,operationItem.trim(),"install").then(()=>{setOperationItem("");return load()})}><Download size={15}/>Adicionar instalação</button></div>
+      <div className="operation-create"><select value={operationProvider} onChange={event=>setOperationProvider(event.target.value as StoreId)}><option value="epic">Epic</option><option value="steam">SteamCMD</option><option value="gog">GOG</option></select><input value={operationItem} onChange={event=>setOperationItem(event.target.value)} placeholder="AppID ou identificador do jogo"/><button disabled={!operationItem.trim()} onClick={()=>void backend.queueStoreOperation(operationProvider,operationItem.trim(),"install").then(()=>{setOperationItem("");return load()})}><Download size={15}/>Adicionar instalação</button></div>
       <section className="dependency-list operation-list">
         {overview?.operations.length ? (
           overview.operations.map((operation) => {

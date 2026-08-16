@@ -181,6 +181,9 @@ fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     if provider == "gog" {
         return ProviderManager::new(root.to_path_buf()).gog_authenticated();
     }
+    if provider == "battlenet" {
+        return ProviderManager::new(root.to_path_buf()).battlenet_installed();
+    }
     if db
         .provider_account(provider)
         .ok()
@@ -192,7 +195,7 @@ fn provider_connected(root: &Path, db: &Database, provider: &str) -> bool {
     match provider {
         "epic" => home.join(".config/legendary/user.json").is_file(),
         "gog" => false,
-        "battlenet" => root.join("prefixes/battlenet").is_dir(),
+        "battlenet" => false,
         _ => false,
     }
 }

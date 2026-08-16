@@ -994,6 +994,53 @@ pub async fn connect_provider(
         let _ = app.emit("provider-state-changed", &provider);
         return Ok(());
     }
+    if provider == "battlenet" {
+        let install_root = data_dir.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            run_battlenet_installer(command, args, &install_root)
+        })
+        .await
+        .map_err(|error| LauncherError::LaunchFailed(error.to_string()))??;
+        let manager = platform::ProviderManager::new(data_dir.clone());
+        let launcher = manager.battlenet_launcher_path().ok_or_else(|| {
+            LauncherError::ProviderUnavailable(
+                "O instalador terminou sem criar o executável do Battle.net".into(),
+            )
+        })?;
+        let mut database = state.database.lock().expect("database lock poisoned");
+        let mut item = database.get("battlenet:client")?.unwrap_or_else(|| {
+            LibraryItem::new(
+                "battlenet:client".into(),
+                "Battle.net".into(),
+                ItemKind::Application,
+                ProviderKind::Battlenet,
+            )
+        });
+        item.executable = Some(launcher.to_string_lossy().into_owned());
+        item.working_directory = launcher
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned());
+        item.compatibility.runtime_id = Some("system:wine".into());
+        item.compatibility.prefix_path = Some(
+            manager
+                .battlenet_prefix_path()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        item.environment
+            .entry("WINEDLLOVERRIDES".into())
+            .or_insert_with(|| "locationapi=d".into());
+        if item.icon.is_none() {
+            item.icon = icon::cached_executable_icon(&launcher, &data_dir)
+                .map(|path| path.to_string_lossy().into_owned());
+        }
+        item.updated_at = chrono::Utc::now().to_rfc3339();
+        database.save_user_item(&item)?;
+        database.upsert_provider_account("battlenet", "connected", None)?;
+        drop(database);
+        let _ = app.emit("provider-state-changed", &provider);
+        return Ok(());
+    }
 
     let settings = state
         .database
@@ -1048,6 +1095,68 @@ pub async fn connect_provider(
 
 const GOG_AUTH_OUTPUT_LIMIT: u64 = 64 * 1024;
 const GOG_AUTH_TIMEOUT: Duration = Duration::from_secs(120);
+const BATTLENET_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+fn run_battlenet_installer(command: String, args: Vec<String>, data_dir: &Path) -> Result<()> {
+    let manager = platform::ProviderManager::new(data_dir.to_path_buf());
+    let prefix = manager.battlenet_prefix_path();
+    if std::fs::symlink_metadata(&prefix).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(LauncherError::ProviderUnavailable(
+            "O prefixo do Battle.net não pode ser um link simbólico".into(),
+        ));
+    }
+    std::fs::create_dir_all(&prefix)?;
+    #[cfg(target_os = "linux")]
+    std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o700))?;
+
+    let mut process = std::process::Command::new(command);
+    process
+        .args(args)
+        .env("WINEPREFIX", &prefix)
+        .env("WINEARCH", "win64")
+        .env("WINEDLLOVERRIDES", "locationapi=d")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    clean_appimage_environment(&mut process);
+    #[cfg(target_os = "linux")]
+    process.process_group(0);
+    let mut child = process
+        .spawn()
+        .map_err(|error| LauncherError::LaunchFailed(error.to_string()))?;
+    let deadline = Instant::now() + BATTLENET_INSTALL_TIMEOUT;
+    let mut exited_at = None;
+    loop {
+        if manager.battlenet_installed() {
+            return Ok(());
+        }
+        if exited_at.is_none() {
+            if let Some(status) = child.try_wait()? {
+                if !status.success() {
+                    return Err(LauncherError::ProviderUnavailable(
+                        "O instalador do Battle.net foi cancelado ou terminou com erro".into(),
+                    ));
+                }
+                exited_at = Some(Instant::now());
+            }
+        }
+        if exited_at.is_some_and(|instant| instant.elapsed() >= Duration::from_secs(30)) {
+            return Err(LauncherError::ProviderUnavailable(
+                "O instalador terminou sem criar o executável do Battle.net".into(),
+            ));
+        }
+        if Instant::now() >= deadline {
+            if exited_at.is_none() {
+                terminate_store_process(&mut child);
+                let _ = child.wait();
+            }
+            return Err(LauncherError::ProviderUnavailable(
+                "A instalação do Battle.net excedeu 15 minutos".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
 
 fn run_gog_auth_command(command: String, args: Vec<String>) -> Result<()> {
     let mut stdout = tempfile::tempfile()?;
@@ -1167,6 +1276,12 @@ pub fn queue_store_operation(
 ) -> Result<String> {
     if !["install", "update", "verify"].contains(&action.as_str()) {
         return Err(LauncherError::InvalidArguments(action));
+    }
+    if provider == "battlenet" {
+        return Err(LauncherError::InvalidArguments(
+            "Instale e atualize jogos diretamente pelo cliente Battle.net disponível na biblioteca"
+                .into(),
+        ));
     }
     if provider == "steam"
         && platform::connected_provider_user(
@@ -2239,13 +2354,14 @@ mod tests {
     use super::{
         collect_process_chunks, epic_store_arguments, load_library_with_icons,
         merge_legendary_installations, parse_legendary_installed, parse_legendary_library,
-        provider_operation_error, run_gog_auth_command, run_legendary_json_command,
-        steam_store_arguments, steam_uninstall_arguments, terminate_store_process,
-        LibrarySyncManager, TransferManager,
+        provider_operation_error, run_battlenet_installer, run_gog_auth_command,
+        run_legendary_json_command, steam_store_arguments, steam_uninstall_arguments,
+        terminate_store_process, LibrarySyncManager, TransferManager,
     };
     use crate::{
         core::model::{ItemKind, LibraryItem, ProviderKind},
         database::Database,
+        platform,
     };
 
     #[test]
@@ -2361,6 +2477,23 @@ mod tests {
             ]
         )
         .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn battlenet_installer_uses_the_managed_prefix_and_detects_the_launcher() {
+        let root = tempfile::tempdir().unwrap();
+        let script = r#"mkdir -p "$WINEPREFIX/drive_c/Program Files (x86)/Battle.net"
+launcher="$WINEPREFIX/drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe"
+head -c 65536 /dev/zero > "$launcher"
+printf MZ | dd of="$launcher" conv=notrunc 2>/dev/null"#;
+
+        run_battlenet_installer("sh".into(), vec!["-c".into(), script.into()], root.path())
+            .unwrap();
+
+        let manager = platform::ProviderManager::new(root.path().to_path_buf());
+        assert!(manager.battlenet_installed());
+        assert!(manager.battlenet_prefix_path().is_dir());
     }
 
     #[test]
