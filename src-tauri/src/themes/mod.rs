@@ -1,4 +1,5 @@
 pub mod automatic;
+pub mod commands;
 mod manager;
 pub mod manifest;
 mod storage;

@@ -276,9 +276,13 @@ impl Database {
                 row.get(0)
             })
             .optional()?;
-        Ok(value
+        let mut settings: AppSettings = value
             .and_then(|json| serde_json::from_str(&json).ok())
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if settings.last_manual_theme_id.is_empty() {
+            settings.last_manual_theme_id = settings.active_theme_id.clone();
+        }
+        Ok(settings)
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> Result<()> {
@@ -769,6 +773,23 @@ fn from_json<T: serde::de::DeserializeOwned + Default>(value: String) -> T {
 mod tests {
     use super::*;
     use crate::core::model::*;
+
+    #[test]
+    fn migrates_the_last_manual_theme_from_legacy_settings() {
+        let db = Database::memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('app',?1)",
+                [r#"{"activeThemeId":"midnight","themeMode":"automatic"}"#],
+            )
+            .unwrap();
+
+        let settings = db.settings().unwrap();
+
+        assert_eq!(settings.active_theme_id, "midnight");
+        assert_eq!(settings.last_manual_theme_id, "midnight");
+        assert_eq!(settings.theme_mode, "automatic");
+    }
 
     #[test]
     fn migration_repairs_legacy_epic_catalog_without_touching_local_entries() {

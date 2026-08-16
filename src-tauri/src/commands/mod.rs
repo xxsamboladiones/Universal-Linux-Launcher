@@ -31,7 +31,6 @@ use crate::{
     process::ProcessManager,
     product::{self, ProductStatus},
     providers,
-    themes::{ThemeDetails, ThemeManager, ThemeSummary},
 };
 
 pub struct AppState {
@@ -744,7 +743,14 @@ pub fn get_settings(state: State<AppState>) -> Result<AppSettings> {
 }
 
 #[tauri::command]
-pub fn update_settings(settings: AppSettings, state: State<AppState>) -> Result<()> {
+pub fn update_settings(mut settings: AppSettings, state: State<AppState>) -> Result<()> {
+    if settings.palette_source == "pywal" {
+        settings.automatic_update = true;
+    }
+    if settings.last_manual_theme_id.is_empty() {
+        settings.last_manual_theme_id = settings.active_theme_id.clone();
+    }
+    validate_theme_settings(&settings)?;
     state
         .database
         .lock()
@@ -752,154 +758,35 @@ pub fn update_settings(settings: AppSettings, state: State<AppState>) -> Result<
         .save_settings(&settings)
 }
 
-#[tauri::command]
-pub async fn list_themes() -> Result<Vec<ThemeSummary>> {
-    tauri::async_runtime::spawn_blocking(ThemeManager::list)
-        .await
-        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
-}
-
-#[tauri::command]
-pub async fn get_theme(id: String) -> Result<ThemeDetails> {
-    tauri::async_runtime::spawn_blocking(move || ThemeManager::get(&id))
-        .await
-        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
-}
-
-#[tauri::command]
-pub fn get_active_theme(state: State<AppState>) -> Result<ThemeDetails> {
-    let id = state
-        .database
-        .lock()
-        .expect("database lock poisoned")
-        .settings()?
-        .active_theme_id;
-    ThemeManager::get(&id).or_else(|_| ThemeManager::get("orbit-dark"))
-}
-
-#[tauri::command]
-pub fn set_active_theme(id: String, state: State<AppState>) -> Result<ThemeDetails> {
-    let theme = ThemeManager::get(&id)?;
-    let mut settings = state
-        .database
-        .lock()
-        .expect("database lock poisoned")
-        .settings()?;
-    settings.active_theme_id = theme.summary.id.clone();
-    // Mantém consumidores antigos da preferência `theme` funcionais durante a migração.
-    settings.theme = match theme.summary.theme_type {
-        crate::themes::manifest::ThemeType::Light => "system",
-        crate::themes::manifest::ThemeType::Dark => "dark",
+fn validate_theme_settings(settings: &AppSettings) -> Result<()> {
+    if !matches!(
+        settings.theme_mode.as_str(),
+        "manual" | "automatic" | "system"
+    ) {
+        return Err(LauncherError::InvalidTheme("modo de tema inválido".into()));
     }
-    .into();
-    state
-        .database
-        .lock()
-        .expect("database lock poisoned")
-        .save_settings(&settings)?;
-    Ok(theme)
-}
-
-#[tauri::command]
-pub async fn validate_theme(path: String) -> Result<ThemeSummary> {
-    let path = PathBuf::from(path);
-    tauri::async_runtime::spawn_blocking(move || ThemeManager::validate_archive(&path))
-        .await
-        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
-}
-
-#[tauri::command]
-pub async fn import_theme(path: String) -> Result<ThemeSummary> {
-    let path = PathBuf::from(path);
-    tauri::async_runtime::spawn_blocking(move || ThemeManager::import(&path))
-        .await
-        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
-}
-
-#[tauri::command]
-pub async fn remove_theme(id: String, state: State<'_, AppState>) -> Result<()> {
-    let id_for_remove = id.clone();
-    tauri::async_runtime::spawn_blocking(move || ThemeManager::remove(&id_for_remove))
-        .await
-        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))??;
-    let mut settings = state
-        .database
-        .lock()
-        .expect("database lock poisoned")
-        .settings()?;
-    if settings.active_theme_id == id {
-        settings.active_theme_id = "orbit-dark".into();
-        settings.theme = "dark".into();
-        state
-            .database
-            .lock()
-            .expect("database lock poisoned")
-            .save_settings(&settings)?;
+    if !matches!(
+        settings.palette_source.as_str(),
+        "automatic" | "pywal" | "native"
+    ) {
+        return Err(LauncherError::InvalidTheme(
+            "fonte de paleta inválida".into(),
+        ));
+    }
+    if !matches!(
+        settings.automatic_color_mode.as_str(),
+        "automatic" | "dark" | "light"
+    ) {
+        return Err(LauncherError::InvalidTheme(
+            "modo de cor automático inválido".into(),
+        ));
+    }
+    if settings.wallpaper_influence > 100 {
+        return Err(LauncherError::InvalidTheme(
+            "a influência do wallpaper deve estar entre 0 e 100".into(),
+        ));
     }
     Ok(())
-}
-
-#[tauri::command]
-pub async fn export_theme(id: String, path: String) -> Result<()> {
-    let destination = PathBuf::from(path);
-    tauri::async_runtime::spawn_blocking(move || ThemeManager::export(&id, &destination))
-        .await
-        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
-}
-
-#[tauri::command]
-pub async fn detect_color_scheme_provider() -> Result<crate::themes::automatic::ProviderStatus> {
-    tauri::async_runtime::spawn_blocking(crate::themes::automatic::detect_provider)
-        .await
-        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))
-}
-
-#[tauri::command]
-pub async fn get_pywal_status() -> Result<crate::themes::automatic::ProviderStatus> {
-    detect_color_scheme_provider().await
-}
-
-#[tauri::command]
-pub async fn get_current_wallpaper() -> Result<String> {
-    tauri::async_runtime::spawn_blocking(crate::themes::automatic::current_wallpaper)
-        .await
-        .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
-}
-
-#[tauri::command]
-pub async fn generate_automatic_palette(
-    state: State<'_, AppState>,
-) -> Result<crate::themes::automatic::AutomaticTheme> {
-    let settings = state
-        .database
-        .lock()
-        .expect("database lock poisoned")
-        .settings()?;
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::themes::automatic::generate(
-            settings.wallpaper_influence,
-            &settings.automatic_color_mode,
-            &settings.palette_source,
-            settings.manual_wallpaper_path,
-        )
-    })
-    .await
-    .map_err(|error| LauncherError::InvalidTheme(error.to_string()))?
-}
-
-#[tauri::command]
-pub async fn get_automatic_theme(
-    state: State<'_, AppState>,
-) -> Result<crate::themes::automatic::AutomaticTheme> {
-    generate_automatic_palette(state).await
-}
-
-#[tauri::command]
-pub async fn refresh_automatic_theme(
-    state: State<'_, AppState>,
-) -> Result<crate::themes::automatic::AutomaticTheme> {
-    let automatic = generate_automatic_palette(state).await?;
-    Ok(automatic)
 }
 
 #[tauri::command]

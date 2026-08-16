@@ -9,6 +9,9 @@ pub struct AppSettings {
     /// preferências gravadas por versões anteriores do Orbit.
     #[serde(default = "default_active_theme_id")]
     pub active_theme_id: String,
+    /// Último tema manual escolhido. Os modos automático e sistema nunca o substituem.
+    #[serde(default)]
+    pub last_manual_theme_id: String,
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
     #[serde(default = "default_palette_source")]
@@ -45,6 +48,7 @@ impl Default for AppSettings {
         Self {
             theme: "dark".into(),
             active_theme_id: "orbit-dark".into(),
+            last_manual_theme_id: "orbit-dark".into(),
             theme_mode: default_theme_mode(),
             palette_source: default_palette_source(),
             wallpaper_influence: default_wallpaper_influence(),

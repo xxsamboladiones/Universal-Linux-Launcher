@@ -9,11 +9,10 @@ import { SettingsPage } from "./components/SettingsPage";
 import { useLibrary } from "./stores/library";
 import type { LibraryItem } from "./types/library";
 import type { ScanProgress } from "./types/library";
-import type { AppSettings } from "./types/library";
 import type { TransferOperation } from "./types/platform";
-import { backend } from "./services/backend";
 import { visibleInLibrary } from "./services/library-filter";
 import { useThemeBootstrap } from "./features/themes/hooks/useThemeBootstrap";
+import { useThemeStore } from "./features/themes/stores/theme";
 import "./styles.css";
 import "./platform.css";
 import "./modal.css";
@@ -32,36 +31,19 @@ export default function App() {
   const [adding, setAdding] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [editing, setEditing] = useState<LibraryItem | null>(null);
-  const [settings, setSettings] = useState<AppSettings>({
-    theme: "dark",
-    activeThemeId: "orbit-dark",
-    themeMode: "manual",
-    paletteSource: "automatic",
-    wallpaperInfluence: 70,
-    automaticColorMode: "automatic",
-    automaticUpdate: false,
-    manualWallpaperPath: null,
-    scanOnStartup: false,
-    confirmBeforeRemove: true,
-    preferredTerminal: "konsole",
-  });
+  const settings = useThemeStore((state) => state.settings);
+  const settingsLoaded = useThemeStore((state) => state.loaded);
+  const saveSettings = useThemeStore((state) => state.updateSettings);
   const input = useRef<HTMLInputElement>(null);
-  const startupConfigured = useRef(false);
+  const startupScanHandled = useRef(false);
   useEffect(() => {
-    if (startupConfigured.current) return;
-    startupConfigured.current = true;
     void load();
-    void backend.settings().then((value) => {
-      setSettings(value);
-      document.documentElement.dataset.theme = value.theme;
-      if (value.scanOnStartup) void scan();
-    });
-  }, [load, scan]);
-  const saveSettings = async (value: AppSettings) => {
-    setSettings(value);
-    document.documentElement.dataset.theme = value.theme;
-    await backend.updateSettings(value);
-  };
+  }, [load]);
+  useEffect(() => {
+    if (!settingsLoaded || startupScanHandled.current) return;
+    startupScanHandled.current = true;
+    if (settings.scanOnStartup) void scan();
+  }, [scan, settings.scanOnStartup, settingsLoaded]);
   useEffect(() => {
     const unlisten = listen<ScanProgress>("scan-progress", (event) =>
       setProgress(event.payload),
