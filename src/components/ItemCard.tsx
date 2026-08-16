@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { LibraryItem } from "../types/library";
+import { usableCover } from "../services/covers";
 
 interface Props {
   item: LibraryItem;
@@ -38,9 +39,10 @@ export function ItemCard({
   onUninstall,
 }: Props) {
   const icon = item.icon?.startsWith("/") ? convertFileSrc(item.icon) : null;
-  const cover = item.cover?.startsWith("/")
-    ? convertFileSrc(item.cover)
-    : item.cover;
+  const coverSource = usableCover(item);
+  const cover = coverSource?.startsWith("/")
+    ? convertFileSrc(coverSource)
+    : coverSource;
   const [failedCover, setFailedCover] = useState<string | null>(null);
   const visibleCover = cover && cover !== failedCover ? cover : null;
   const managedDownload = ["epic", "gog"].includes(item.provider);

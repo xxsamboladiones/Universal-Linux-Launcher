@@ -24,6 +24,7 @@ struct GogGamesDbRelease {
     #[serde(rename = "type")]
     release_type: String,
     title: HashMap<String, String>,
+    visible_in_library: Option<bool>,
     supported_operating_systems: Vec<GogOperatingSystem>,
     game: GogGamesDbGame,
 }
@@ -37,7 +38,6 @@ struct GogOperatingSystem {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct GogGamesDbGame {
-    visible_in_library: Option<bool>,
     vertical_cover: Option<GogImageFormat>,
     cover: Option<GogImageFormat>,
     background: Option<GogImageFormat>,
@@ -184,7 +184,7 @@ pub(crate) fn catalog_item(
 pub(crate) fn is_installable_metadata(metadata: &[u8]) -> bool {
     serde_json::from_slice::<GogGamesDbRelease>(metadata).map_or(true, |release| {
         (release.release_type.is_empty() || matches!(release.release_type.as_str(), "game" | "mod"))
-            && release.game.visible_in_library != Some(false)
+            && release.visible_in_library != Some(false)
     })
 }
 
@@ -360,13 +360,13 @@ mod tests {
     #[test]
     fn filters_hidden_or_unsupported_gamesdb_releases() {
         assert!(!is_installable_metadata(
-            br#"{"type":"game","game":{"visible_in_library":false}}"#
+            br#"{"type":"game","visible_in_library":false,"game":{}}"#
         ));
         assert!(!is_installable_metadata(
-            br#"{"type":"bonus","game":{"visible_in_library":true}}"#
+            br#"{"type":"bonus","visible_in_library":true,"game":{}}"#
         ));
         assert!(is_installable_metadata(
-            br#"{"type":"game","game":{"visible_in_library":true}}"#
+            br#"{"type":"game","visible_in_library":true,"game":{}}"#
         ));
     }
 
